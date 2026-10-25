@@ -392,6 +392,7 @@
 ;; Labels, fixups and relocations past `at` move down by `n` bytes. A rel32
 ;; across the cut does not change: both ends move.
 (defn shift-after! [A] [(c (ptr (Compiler A))) (at u32) (n u32)] (-> void)
+  (core/debug-shift! c at n)
   (for i (range 0 (len (.label-offs c)))
     (let [o (get (.label-offs c) i)]
       (when (and (!= o (core/none)) (>= o at)) (set! (mut (.label-offs c)) i (- o n)))))

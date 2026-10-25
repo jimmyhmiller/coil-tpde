@@ -98,6 +98,7 @@
 (const OP-CONDBR 111) ; (cond) then, else
 (const OP-SWITCH 112) ; (value) default, cases...; imm = first case in `case-values`
 (const OP-UNREACHABLE 113)
+
 (const OP-PHI 114)
 
 ; integer compare predicates
@@ -204,7 +205,15 @@
    (small-consts (ArrayList u32))
    ; drop-dead!'s use counts and spare instruction list
    (scratch-uses (ArrayList u32))
-   (scratch-insts (ArrayList u32))])
+   (scratch-insts (ArrayList u32))
+   ; ---- debug info: each value's source position (`cur-loc` when it was
+   ; made; 0 for none), and how many debug marks the function has
+   (locs (ArrayList u64))
+   (cur-loc u64)
+   ; debug marks (dbg-mark!): mark id -> the instruction it precedes (NONE if
+   ; none followed), and how many marks wait for the next instruction
+   (mark-insts (ArrayList u32))
+   (pending-marks u32)])
 
 (defn none [] (-> u32) (: 0xFFFFFFFF u32))
 (defn i64-of [(x u32)] (-> i64) (cast i64 x))
@@ -229,7 +238,9 @@
             :small-consts (let [(mut xs) (ArrayList::new [u32] a)]
                             (for _ (range 0 64) (push! (mut xs) (none)))
                             xs)
-            :scratch-uses (ArrayList::new [u32] a) :scratch-insts (ArrayList::new [u32] a)))))
+            :scratch-uses (ArrayList::new [u32] a) :scratch-insts (ArrayList::new [u32] a)
+            :locs (ArrayList::new [u64] a) :cur-loc (: 0 u64)
+            :mark-insts (ArrayList::new [u32] a) :pending-marks (: 0 u32)))))
 
 ;;; Start a new function (keeps the storage).
 (defn reset! [(f (ptr Func)) (name (slice u8))] (-> void)
@@ -244,6 +255,10 @@
   (clear! (mut (.arg-sret f)))
   (clear! (mut (.arg-flags f)))
   (clear! (mut (.allocas f)))
+  (clear! (mut (.locs f)))
+  (set! (.cur-loc f) (: 0 u64))
+  (clear! (mut (.mark-insts f)))
+  (set! (.pending-marks f) (: 0 u32))
   (clear! (mut (.phis f)))
   (clear! (mut (.case-values f)))
   (clear! (mut (.fwd f)))
@@ -285,7 +300,26 @@
                   :nops (: 0 u32) :ntotal (: 0 u32) :opb (u32-of (len (.operands f)))
                   :imm imm :imm2 imm2 :block (none) :next (none)))
     (push! (mut (.fwd f)) (none))
+    (push! (mut (.locs f)) (.cur-loc f))
     id))
+
+;;; The source position the instructions made from here on belong to (an
+;;; opaque nonzero number the client decodes; 0 for none).
+(defn set-loc! [(f (ptr Func)) (loc u64)] (-> void) (set! (.cur-loc f) loc))
+
+;;; A debug mark here (where a variable comes into scope, say): it marks the
+;;; next instruction, whose code offset the compiler records (Value.flags bit
+;;; 5, Compiler.dbg-marks). Returns its id. No instruction is added.
+(defn dbg-mark! [(f (ptr Func))] (-> u32)
+  (let [id (u32-of (len (.mark-insts f)))]
+    (push! (mut (.mark-insts f)) (none))
+    (set! (.pending-marks f) (+ (.pending-marks f) (: 1 u32)))
+    id))
+
+(defn nmarks [(f (ptr Func))] (-> i64) (len (.mark-insts f)))
+
+;;; Whether instruction `v` carries debug marks.
+(defn dbg-marked? [(f (ptr Func)) (v u32)] (-> bool) (!= (& (.flags (val f v)) (: 0x20 u8)) (: 0 u8)))
 
 (defn push-operand! [(f (ptr Func)) (x u32) (flags u32)] (-> void)
   (push! (mut (.operands f)) x)
@@ -318,8 +352,10 @@
     v))
 
 ;;; A stack slot of `size` bytes; its value is the slot's address.
+;;; A static stack slot; its `next` is its ordinal in `allocas`.
 (defn alloca! [(f (ptr Func)) (size i64) (align i64)] (-> u32)
   (let [v (push-value! f OP-ALLOCA T-I64 (if (< size 1) 1 size) (if (< align 1) 1 align))]
+    (set! (.next (val f v)) (u32-of (len (.allocas f))))
     (push! (mut (.allocas f)) v)
     (mark-frame-derived! f v)
     v))
@@ -357,6 +393,11 @@
   (let [v (push-value! f op ty imm imm2)]
     (push! (mut (.insts f)) v)
     (set! (.iend (blk f (.cur f))) (u32-of (len (.insts f))))
+    (when (> (.pending-marks f) (: 0 u32))
+      (let [n (len (.mark-insts f))]
+        (for k (range (- n (i64-of (.pending-marks f))) n) (set! (mut (.mark-insts f)) k v)))
+      (set! (.flags (val f v)) (| (.flags (val f v)) (: 0x20 u8)))
+      (set! (.pending-marks f) (: 0 u32)))
     v))
 
 (defn set-ops! [(f (ptr Func)) (v u32) (nops u32) (ntotal u32)] (-> void)
@@ -779,7 +820,9 @@
       (while (>= i 0)
         (let [v (get (.insts f) i)
               x (val f v)]
-          (when (and (pure-op? (cast i64 (.op x))) (= (get uses (i64-of v)) (: 0 u32)))
+          ; (an instruction carrying debug marks stays: its offset is needed)
+          (when (and (pure-op? (cast i64 (.op x))) (= (get uses (i64-of v)) (: 0 u32))
+                     (= (& (.flags x) (: 0x20 u8)) (: 0 u8)))
             (set! (.flags x) (| (.flags x) (: 8 u8)))
             (set! dead (+ dead 1))
             (for k (range 0 (i64-of (.nops x)))

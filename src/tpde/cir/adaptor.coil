@@ -99,6 +99,8 @@
             :else (: 1 u32))))
   (inst-result [(self (ptr Func)) (inst u32) (i u32)] (-> u32) (+ inst i))
   (inst-fused? [(self (ptr Func)) (inst u32)] (-> bool) (!= (& (.flags (cir/val self inst)) (: 1 u8)) (: 0 u8)))
+  (inst-loc [(self (ptr Func)) (inst u32)] (-> u64) (get (.locs self) (i64-of inst)))
+  (inst-marked? [(self (ptr Func)) (inst u32)] (-> bool) (cir/dbg-marked? self inst))
   (inst-name [(self (ptr Func)) (inst u32)] (-> (slice u8)) (isel/op-name (cast i64 (.op (cir/val self inst))))))
 
 (defn ty-of [(f (ptr Func)) (v u32)] (-> i64) (cast i64 (.ty (cir/val f v))))

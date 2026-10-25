@@ -272,7 +272,17 @@
    ; between term-begin! and term-end!: the fixed registers as the terminator
    ; found them (see term-begin!)
    (terminating bool)
-   (term-snap (ArrayList u64))])
+   (term-snap (ArrayList u64))
+   ; ---- debug info, when `debug`: (code offset, inst-loc) pairs where the
+   ; source position changes, (instruction, code offset) pairs of the
+   ; instructions inst-marked? names (debug-mark!), and each static alloca's
+   ; frame offset (as load-stack-var-addr! takes it), all for the function
+   ; just compiled
+   (debug bool)
+   (dbg-rows (ArrayList u64))
+   (dbg-marks (ArrayList u64))
+   (dbg-allocas (ArrayList i64))
+   (dbg-last-loc u64)])
 
 (impl [A] (Compiler A)
   (new [(ad (ptr A)) (a (ptr Asm)) (arch u8)] (-> (Compiler A))
@@ -296,6 +306,9 @@
       (set! (.veneers c) (ArrayList::new [u32] al))
       (set! (.tail-stubs c) (ArrayList::new [u64] al))
       (set! (.term-snap c) (ArrayList::new [u64] al))
+      (set! (.dbg-rows c) (ArrayList::new [u64] al))
+      (set! (.dbg-marks c) (ArrayList::new [u64] al))
+      (set! (.dbg-allocas c) (ArrayList::new [i64] al))
       (set! (.cc c) (cc-new true))
       (set! (.variable-ref-list c) (none))
       (set! (.phi-block-idx c) (none))
@@ -1713,7 +1726,14 @@
           n (block-inst-count ad b)]
       (for i (range 0 (i64-of n))
         (let [inst (block-inst ad b (u32-of i))]
+          (when (and (.debug c) (inst-marked? ad inst)) (debug-mark! c (i64-of inst)))
           (when (not (inst-fused? ad inst))
+            (when (.debug c)
+              (let [l (inst-loc ad inst)]
+                (when (and (!= l (: 0 u64)) (!= l (.dbg-last-loc c)))
+                  (push! (mut (.dbg-rows c)) (cast u64 (text-off c)))
+                  (push! (mut (.dbg-rows c)) l)
+                  (set! (.dbg-last-loc c) l))))
             (when (not (compile-inst! ad c inst))
               (eprintln "tpde: failed to compile instruction {}" (inst-name ad inst))
               (return-from :blk false))
@@ -1744,6 +1764,10 @@
       (set! (.frame-used c) false)
       (set! (.fixed-hint c) (no-reg))
       (set! (.terminating c) false)
+      (clear! (mut (.dbg-rows c)))
+      (clear! (mut (.dbg-marks c)))
+      (clear! (mut (.dbg-allocas c)))
+      (set! (.dbg-last-loc c) (: 0 u64))
       (set! (.fixed-count-gp c) (: 0 u32))
       (set! (.fixed-count-fp c) (: 0 u32))
       (let [nvals (len (.liveness (.an c)))]
@@ -1786,6 +1810,7 @@
               align2 (if (< align (: 1 u32)) (: 1 u32) align)
               rounded (& (+ size (- align2 (: 1 u32))) (^ (- align2 (: 1 u32)) (: 0xFFFFFFFF u32)))
               slot (allocate-stack-slot-aligned! c (if (= rounded (: 0 u32)) (: 1 u32) rounded) align2)]
+          (push! (mut (.dbg-allocas c)) (cast i64 slot))
           (init-stack-variable! c (val-local c v) slot)))
       (when (not (begin-func! ad c f)) (return-from :fn false))
       (let [nb (len (.block-layout (.an c)))]
@@ -1880,6 +1905,22 @@
           (arch-assign-arg! c (mut cca))
           (set! (.cc c) saved)
           (.reg cca)))))
+
+;;; Record mark `id` (a marked instruction) at the current code offset.
+(defn debug-mark! [A] [(c (ptr (Compiler A))) (id i64)] (-> void)
+  (push! (mut (.dbg-marks c)) (cast u64 id))
+  (push! (mut (.dbg-marks c)) (cast u64 (text-off c))))
+
+;;; Code from `at` moved down by `n` bytes (the prologue's unused space was
+;;; cut): so do the debug rows and marks after it.
+(defn debug-shift! [A] [(c (ptr (Compiler A))) (at u32) (n u32)] (-> void)
+  (let [at64 (cast u64 at) n64 (cast u64 n)]
+    (for i (range 0 (/ (len (.dbg-rows c)) 2))
+      (let [o (get (.dbg-rows c) (* i 2))]
+        (when (>= o at64) (set! (mut (.dbg-rows c)) (* i 2) (- o n64)))))
+    (for i (range 0 (/ (len (.dbg-marks c)) 2))
+      (let [o (get (.dbg-marks c) (+ (* i 2) 1))]
+        (when (>= o at64) (set! (mut (.dbg-marks c)) (+ (* i 2) 1) (- o n64)))))))
 
 (defn resolve-fixups! [A] [(c (ptr (Compiler A)))] (-> void)
   (for i (range 0 (len (.fixups c)))

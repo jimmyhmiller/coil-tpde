@@ -83,4 +83,10 @@
   (inst-result-count [(self (ptr Self)) (inst u32)] (-> u32))
   (inst-result [(self (ptr Self)) (inst u32) (i u32)] (-> u32))
   (inst-fused? [(self (ptr Self)) (inst u32)] (-> bool))
+  ; the source position debug info maps the instruction's code to: an opaque
+  ; nonzero number recorded with the code offset (Compiler.dbg-rows); 0 for none
+  (inst-loc [(self (ptr Self)) (inst u32)] (-> u64))
+  ; whether debug info wants the code offset of the instruction (recorded in
+  ; Compiler.dbg-marks with the instruction, fused or not)
+  (inst-marked? [(self (ptr Self)) (inst u32)] (-> bool))
   (inst-name [(self (ptr Self)) (inst u32)] (-> (slice u8))))

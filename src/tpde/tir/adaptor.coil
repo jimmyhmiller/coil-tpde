@@ -112,4 +112,6 @@
     (if (tir/op-def? (.op (val self inst))) (: 1 u32) (: 0 u32)))
   (inst-result [(self (ptr TirAdaptor)) (inst u32) (i u32)] (-> u32) inst)
   (inst-fused? [(self (ptr TirAdaptor)) (inst u32)] (-> bool) false)
+  (inst-loc [(self (ptr TirAdaptor)) (inst u32)] (-> u64) (: 0 u64))
+  (inst-marked? [(self (ptr TirAdaptor)) (inst u32)] (-> bool) false)
   (inst-name [(self (ptr TirAdaptor)) (inst u32)] (-> (slice u8)) (.name (val self inst))))
