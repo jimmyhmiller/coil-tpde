@@ -30,6 +30,10 @@
   ;;; Whether the current function may contain calls (TPDE's
   ;;; cur_func_may_emit_calls); a function that cannot is a leaf.
   (cur-may-emit-calls? [(self (ptr Self))] (-> bool))
+  ;;; Whether the current function has tail calls. A function whose only calls
+  ;;; are tail calls is a leaf (nothing is live across a tail call), but its
+  ;;; fixed registers must then stay clear of the argument registers.
+  (cur-has-tail-calls? [(self (ptr Self))] (-> bool))
   ;;; Whether to try hard for a fixed register for `v`.
   (force-fixed? [(self (ptr Self)) (v u32)] (-> bool))
   ;;; Whether `v` may receive a fixed register at all.

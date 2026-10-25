@@ -218,6 +218,8 @@
    (dyn-free (ArrayList DynSlot))
    (has-dynamic-alloca bool)
    (is-leaf bool)
+   ; a leaf with tail calls: fixed registers avoid the argument registers
+   (leaf-tail-calls bool)
    (generated-call bool)
    (frame-used bool)
    (generating-branch bool)
@@ -467,7 +469,8 @@
           ; the predecessor's loop: a loop header's PHI then competes with
           ; every definition in the loop and rarely gets a register, so the
           ; loop's variable went through its stack slot on every iteration.
-          ; Judge a PHI by its own block's loop instead.
+          ; Judge a PHI by its own block's loop instead (liveness is still
+          ; measured from here: a merge block's PHI dies in that block).
           at (if (and (!= (.phi-block-idx c) (none)) (val-phi? ad value)) (.phi-block-idx c) (.cur-block-idx c))]
       ; a single-part value live beyond this block may get a fixed register
       (when (= count (: 1 u32))
@@ -475,7 +478,7 @@
               cur-loop (an/loop-at (cast (ptr (Analyzer A)) (mut (.an c)))
                                    (an/block-loop-idx (cast (ptr (Analyzer A)) (mut (.an c))) at))
               limit (fixed-limit c bank)
-              (mut try) (and (> (.last lv) at)
+              (mut try) (and (> (.last lv) (.cur-block-idx c))
                              (< (+ (.definitions-in-childs cur-loop) (fixed-count c bank)) limit))]
           (when (force-fixed? ad value) (set! try (< (fixed-count c bank) limit)))
           (when (or (not (allow-fixed? ad value)) (and (.no-fixed c) (not (force-fixed? ad value))))
@@ -1533,6 +1536,10 @@
 
 ;;; Before the call instruction: evict caller-saved registers in use except the
 ;;; argument registers (and `keep`).
+;;; Before a tail call: nothing runs after it in this function, so nothing is
+;;; evicted, and fixed registers keep their values for the blocks after it.
+(defn tail-call-prepare! [A] [(c (ptr (Compiler A)))] (-> void) 0)
+
 (defn call-evict-clobbered! [A] [(c (ptr (Compiler A))) (keep u64)] (-> void)
   (set! (.generated-call c) true)
   (let [clobbered (^ (arch-callee-saved c) (: 0xFFFFFFFFFFFFFFFF u64))
@@ -1645,6 +1652,7 @@
       (set! (.frame-size c) (: 0 u32))
       (set! (.has-dynamic-alloca c) (cur-has-dynamic-alloca? ad))
       (set! (.is-leaf c) (not (cur-may-emit-calls? ad)))
+      (set! (.leaf-tail-calls c) (and (.is-leaf c) (cur-has-tail-calls? ad)))
       (set! (.generated-call c) false)
       (set! (.frame-used c) false)
       (set! (.fixed-count-gp c) (: 0 u32))

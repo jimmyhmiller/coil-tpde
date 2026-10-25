@@ -128,6 +128,7 @@
   (val-sym-addend [(self (ptr Func)) (v u32)] (-> i64) (.imm2 (cir/val self v)))
   (cur-arg-flags [(self (ptr Func)) (i u32)] (-> u32) (get (.arg-flags self) (i64-of i)))
   (cur-may-emit-calls? [(self (ptr Func))] (-> bool) (.has-calls self))
+  (cur-has-tail-calls? [(self (ptr Func))] (-> bool) (.has-tail-calls self))
   (force-fixed? [(self (ptr Func)) (v u32)] (-> bool) false)
   (allow-fixed? [(self (ptr Func)) (v u32)] (-> bool) true)
   (begin-func! [(self (ptr Func)) (c (ptr (Compiler Func))) (f u32)] (-> bool)

@@ -1,5 +1,5 @@
 ;;; Encoder check: prints `<4 bytes> ; <expected llvm-mc text>` per instruction.
-;;; tests/check_enc.sh feeds the bytes to `llvm-mc --disassemble` and compares.
+;;; `tpde-check enc` feeds the bytes to `llvm-mc --disassemble` and compares.
 (module tpde.tests.enc-a64)
 (import "tpde.a64.enc" :as e)
 (import "coil.primitive" :as primitive)

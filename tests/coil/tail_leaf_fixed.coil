@@ -1,0 +1,21 @@
+;;; A function whose only calls are tail calls is a leaf, so its values may get
+;;; fixed caller-saved registers; a tail call must not evict them, or a later
+;;; block (compiled after it) finds the value neither in its register nor in a
+;;; stack slot anyone wrote. Miscompiled `pick` before the fix; caught when the
+;;; tpde-built compiler ran its LLVM backend (cg-sum-word-ty).
+(module tests.tail-leaf-fixed)
+(import "coil.cc" :as cc)
+(extern printf :cc (cc/C) [(ptr i8) ...] (-> i32))
+(defstruct S [(a i64) (b i64) (c i64) (d i64) (e i64) (f i64) (g i64) (h i64) (w i64)])
+(defn f1 [(s (ptr S))] (-> i64) (+ (.a s) 1))
+(defn f2 [(s (ptr S))] (-> i64) (+ (.b s) 2))
+(defn pick [(s (ptr S))] (-> i64) (if (= (.w s) 4) (f1 s) (f2 s)))
+(defn pick3 [(s (ptr S)) (k i64)] (-> i64)
+  (cond (= k 0) (f1 s) (= k 1) (f2 s) :else (+ (.w s) k)))
+(defn main [] (-> i64)
+  (let [(mut s) (zeroed S)]
+    (set! (.a s) 10) (set! (.b s) 20) (set! (.w s) 8)
+    (printf c"%ld %ld\n" (pick (mut s)) (pick3 (mut s) 2))
+    (set! (.w s) 4)
+    (printf c"%ld %ld %ld\n" (pick (mut s)) (pick3 (mut s) 0) (pick3 (mut s) 1))
+    0))

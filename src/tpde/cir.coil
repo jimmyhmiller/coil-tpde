@@ -176,6 +176,7 @@
    (bytes (ArrayList u8))
    (cur u32)
    (has-calls bool)
+   (has-tail-calls bool)
    (has-dynamic-alloca bool)
    ; the address of a stack slot escaped: no pointer-argument tail calls
    (frame-escapes bool)
@@ -209,7 +210,7 @@
             :allocas (ArrayList::new [u32] a)
             :phis (ArrayList::new [u32] a) :case-values (ArrayList::new [u64] a)
             :fwd (ArrayList::new [u32] a) :bytes (ArrayList::new [u8] a)
-            :cur (none) :has-calls false :has-dynamic-alloca false :frame-escapes false
+            :cur (none) :has-calls false :has-tail-calls false :has-dynamic-alloca false :frame-escapes false
             :var-types (ArrayList::new [u8] a) :last-def (ArrayList::new [VarDef] a)
             :def-slots (ArrayList::new [DefSlot] a) :def-gen (: 1 u32) :def-count 0
             :incomplete (ArrayList::new [IncompletePhi] a)
@@ -242,6 +243,7 @@
   (clear! (mut (.incomplete f)))
   (set! (.cur f) (none))
   (set! (.has-calls f) false)
+  (set! (.has-tail-calls f) false)
   (set! (.has-dynamic-alloca f) false)
   (set! (.frame-escapes f) false)
   (set! (.undef-i64 f) (none))
@@ -500,7 +502,7 @@
   ; nothing is live across a tail call, so it does not make the function a
   ; non-leaf (which would put its values in callee-saved registers); one that
   ; compiles as an ordinary call evicts what it clobbers like any call
-  (unless tail (set! (.has-calls f) true))
+  (if tail (set! (.has-tail-calls f) true) (set! (.has-calls f) true))
   (let [nr (len (load rtypes))
         rty (if (> nr 0) (cast i64 (get (load rtypes) 0)) T-VOID)
         v (inst! f (if tail OP-TAILCALL OP-CALL) rty (if (= target (none)) -1 (i64-of target)) 0)
@@ -738,6 +740,13 @@
 ;;; Remove pure instructions whose results are unused (address arithmetic the
 ;;; access folded, results lowering computed and dropped), and with them uses
 ;;; that kept others alive.
+;;; Instructions the isel compiles to a call of a runtime function: the
+;;; function is not a leaf.
+(defn runtime-call-op? [(x (ptr Value))] (-> bool)
+  (let [op (cast i64 (.op x))]
+    (or (= op OP-MEMCPYV) (= op OP-MEMMOVEV) (= op OP-MEMSETV)
+        (and (>= op OP-SDIV) (<= op OP-UREM) (= (cast i64 (.ty x)) T-I128)))))
+
 (defn drop-dead! [(f (ptr Func))] (-> void)
   (let [nv (len (.values f))
         (mut uses) (.scratch-uses f)]
@@ -750,6 +759,8 @@
             (let [o (i64-of (get (.operands f) (+ (i64-of (.opb x)) k)))]
               (set! (mut uses) o (+ (get uses o) (: 1 u32))))))))
     (for i (range 0 (len (.args f))) (let [a (i64-of (get (.args f) i))] (set! (mut uses) a (+ (get uses a) (: 1 u32)))))
+    (for i (range 0 (len (.insts f)))
+      (when (runtime-call-op? (val f (get (.insts f) i))) (set! (.has-calls f) true)))
     ; newest first: a dead instruction's operands were made before it
     (let [(mut dead) 0
           ni (len (.insts f))

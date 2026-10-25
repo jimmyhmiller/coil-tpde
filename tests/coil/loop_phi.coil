@@ -1,0 +1,17 @@
+;;; Loop-carried variables (Braun PHIs at loop headers) with a store to memory
+;;; in the loop body, and an argument live across the loop.
+(module tests.loop-phi)
+(import "coil.cc" :as cc)
+(extern printf :cc (cc/C) [(ptr i8) ...] (-> i32))
+(extern malloc :cc (cc/C) [i64] (-> (ptr i8)))
+(defn fill [(p (ptr u8)) (n i64)] (-> i64)
+  (let [(mut i) 0 (mut sum) 0]
+    (loop (if (>= (load i) n)
+              (break)
+              (do (set! (index p (load i)) (cast u8 (% (load i) 251)))
+                  (set! sum (+ (load sum) (cast i64 (load (index p (load i))))))
+                  (set! i (+ (load i) 1)))))
+    (load sum)))
+(defn main [] (-> i64)
+  (printf c"%ld\n" (fill (cast (ptr u8) (malloc 100000)) 100000))
+  0)

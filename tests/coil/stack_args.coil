@@ -1,0 +1,11 @@
+;;; Narrow integer arguments past the eighth: Apple packs stack arguments at
+;;; their natural size (i8 at +0, i16 at +2, i32 at +4, i64 at +8).
+(module tests.stack-args)
+(import "coil.cc" :as cc)
+(extern printf :cc (cc/C) [(ptr i8) ...] (-> i32))
+(defn packed [(a i32) (b i32) (c i32) (d i32) (e i32) (f i32) (g i32) (h i32)
+              (i i8) (j i16) (k i32) (l i64) (m u8) (n bool)] (-> i64)
+  (+ (cast i64 i) (* (cast i64 j) 10) (* (cast i64 k) 100) (* l 1000) (* (cast i64 m) 10000) (if n 100000 0)))
+(defn main [] (-> i64)
+  (printf c"%ld\n" (packed 0 0 0 0 0 0 0 0 (: -5 i8) (: 6 i16) 7 8 (: 9 u8) true))
+  0)

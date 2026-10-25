@@ -13,6 +13,44 @@ the IR it compiles, and then the backend for the Coil compiler itself
 | What is the performance bar? | **LLVM -O0**, on both compile time and the speed of the generated code (`coil build -O0`, which runs LLVM's `default<O0>`). |
 | How does Coil's tree become SSA? | **Braun et al.**, "Simple and Efficient Construction of SSA Form" (CC 2013), done on the fly while lowering the expression tree. Locals whose address is never taken become SSA values; address-taken ones become static allocas. |
 
+## Decisions (2026-10-25)
+
+| Question | Decision | Why |
+|---|---|---|
+| What IR does Coil lower to? | **CIR** (`tpde.cir`), a small SSA IR in this package: types I64, I128, F32, F64, V128; constants, symbol addresses, arguments and allocas are values without instructions (TPDE's "values that are not instructions"); PHIs per block; Braun SSA (`def-var!`/`use-var!`/`seal!`, trivial PHIs removed by forwarding plus a fixpoint in `finish!`). | TPDE compiles *an* SSA IR through an adaptor; Coil's tree is not one. A purpose-built IR with dense `u32` handles is the cheapest adaptor. |
+| How are integers represented? | **Canonical 64-bit**: every integer narrower than 64 bits lives in an I64 extended (sign or zero) from its width, as `codegen_a64` keeps them. Extensions are explicit CIR ops; constant extensions fold. | One integer type keeps CIR and the isel small; matches the existing native backend, so values crossing to C or `codegen_a64` code agree. |
+| Who builds the module around the functions? | **`codegen_a64`'s module setup** (signatures, layouts, statics, strings, exports, its MObj and Coil's Mach-O writer). tpde emits each function's text into its own `tpde.asm` assembler; `tl-merge!` moves text, constants, symbols and relocations into the MObj. | Data, statics, string pools and exports are already right there; duplicating them would be a second source of truth. The tpde Mach-O writer stays for TIR and the package's own tools. |
+| Which locals become SSA values? | An `alloc stack` of a scalar bound by a `let`, whose name is only ever the address of a load or store. Decided by an escape scan that runs **lazily from the let** that binds the first candidate, over that let's scope. Others stay stack slots (TPDE: static allocas). | A name is only visible in its scope, so the scope is all the scan needs; 4 in 5 functions have no candidate and are not scanned. |
+| Tail calls | Coil's guaranteed tail calls are OP-TAILCALL. A tail call becomes an ordinary call plus return when its arguments need the stack, or when the frame's address escapes (a pointer into the frame reached a call, a store, a return or a variable: `Value.flags` bit 2), since the callee would see a popped frame. | TPDE has no tail calls; Coil programs recurse 200M deep through them. The escape rule came from a self-host miscompile. |
+| `:shim` conventions | OP-SHIMCALL: arguments in named registers, an exact clobber set, inline machine code bodies. | Mirrors `codegen_a64`'s shim lowering. |
+| Debug info | **None.** `-g` keeps selecting the arm64 backend. | Not part of the -O0 compile-time bar; TPDE emits only unwind info. |
+| Threads | **Two-stage pipeline**: the backend thread lowers function *i+1* while a second thread compiles function *i* (`codegen_tpde.coil`, "jobs"). A ring of 8 jobs with an atomic state per slot; both sides spin then yield. The compiling side touches only tpde state (the job's CIR, the Compiler, the assembler, whose symbol table is chunked and locked for adding). Jobs complete in order, so the object is identical to compiling serially (`COIL_TPDE_SERIAL=1`). | Serial tpde is ~10.3× LLVM -O0: at the bar but with no margin, and most of what is left is cache misses on the front end's AST. A condition-variable handoff cost more than it saved (a wakeup per function). |
+| Where does the tpde package live? | Its own repository (`coil-tpde`), a path dependency of the Coil workspace (`Coil.toml` `[dependencies] tpde`); `stage0.py` adds `../coil-tpde/src` as a namespace root for the bootstrap. | The package is generic and has its own tests; the compiler consumes it like any dependency. |
+| Tooling language | Coil (`src/tools/tpde_check.coil`, `src/tools/tpde_bench.coil`, shared helpers in `src/tools/proc.coil`). The only non-Coil scripts left build the C++ reference (`ref/build.sh`). | As asked. The Python `parity.py`/`gen_tir.py` and shell `check_enc.sh`/`norm_objdump.sh` were ported and removed. |
+
+### Where we differ from TPDE
+
+All are heuristics; none changes what a program computes. `tpde-check codegen`
+reports where TIR output still matches the C++ reference (9/10 runs).
+
+- **A displaced argument register moves, not spills.** When a call's argument
+  needs a register that holds a live value, the value moves to a free register
+  no argument uses (`evict-reg-for-arg!`); TPDE spills it. At a tail call that
+  was a store and a reload per iteration.
+- **A PHI's fixed register is judged by the PHI's own loop.** TPDE initializes
+  a PHI in a predecessor and asks whether the *predecessor's* loop has room for
+  another fixed register, so a loop header's PHI competed with every definition
+  inside the loop and lived in its stack slot. The liveness test is unchanged.
+  On Apple cores the stack round trip was not just slow: reusing a value loaded
+  before a store to the same slot cost 3× (measured with hand-written loops).
+- **Tail calls do not make a function non-leaf.** Nothing is live across one,
+  so a self-recursive function keeps caller-saved registers.
+- **CIR folds ADDI into load/store offsets and drops unused pure
+  instructions** (`finish!`), and shares small integer constants per function.
+- **Narrow integer arguments carry their C size** (`AF-SIZE`, argument flags
+  bits 24..26): Apple packs stack arguments at natural size, and CIR has only
+  64-bit integers.
+
 ## Architecture
 
 TPDE's layering, with C++ templates/CRTP replaced by Coil traits plus
@@ -54,6 +92,27 @@ Assembler                   sections, symbols, relocations, labels/fixups
    calls, so this is new work in the call lowering (`codegen.coil`
    `tail-call-ok` defines which calls qualify).
 
+### Package layout
+
+```
+src/tpde/adaptor.coil     IRAdaptor trait (TPDE's IRAdaptor)
+src/tpde/analyzer.coil    RPO, loops (Wei et al.), layout, liveness
+src/tpde/codegen.coil     IRCompiler trait: value parts, constants, isel hook
+src/tpde/core.coil        CompilerBase: assignments, registers, spills, PHIs, calls
+src/tpde/a64.coil         arm64 layer: CC (AAPCS64/Apple), frames, branches, veneers
+src/tpde/a64/enc.coil     arm64 encoder
+src/tpde/asm.coil         sections, symbols, relocations
+src/tpde/macho.coil       Mach-O writer
+src/tpde/buf.coil         byte buffer
+src/tpde/tir/             TIR: parser/printer, adaptor, isel (the test IR)
+src/tpde/cir.coil         CIR builder (Braun SSA)
+src/tpde/cir/             CIR adaptor and arm64 isel
+src/tools/                tpde-test (C++ tpde_test's CLI), tpde-check, tpde-bench
+```
+
+The Coil side is `../coil/src/compiler/codegen_tpde.coil` (lowering, module,
+pipeline) and `codegen_tpde_ir.coil` (the `llvm-ir` escape-hatch subset).
+
 ## Port notes
 
 - Adaptor handles are `u32` (TPDE allows any 8-byte handle). Ranges are a count
@@ -73,14 +132,14 @@ Assembler                   sections, symbols, relocations, labels/fixups
 | TIR execution | TIR programs run in-process (JIT) with expected results |
 | Coil corpus | a `tpde` lane in `scripts/oracle.py` matches the LLVM reference on all of `tests/corpus` |
 | C ABI | `scripts/tests/c-abi.py` passes with `--backend tpde` |
-| Self-host | the Coil compiler built with `--backend tpde` passes `dev.py test fast` |
+| Self-host | the Coil compiler built with `--backend tpde` builds itself to a fixed point and passes `dev.py test fast` |
 
 ### Performance gates (vs LLVM -O0)
 
 | Metric | Measured with | Target |
 |---|---|---|
-| Backend compile time | `--timings` / `COIL_TRACE` spans: LLVM's `llvm-lower`+`llvm-optimize`+`object-emit` vs ours | ≥10× faster (TPDE's claim is 10–20×) |
-| Generated code speed | `dev.py benchmark runtime` built `-O0` vs `--backend tpde` | ≤1.0× LLVM -O0 runtime (Braun SSA should beat -O0) |
+| Backend compile time | `tpde-bench compile-time`: `--timings` spans, LLVM's `llvm-lower`+`llvm-optimize`+`object-emit` vs ours | ≥10× faster (TPDE's claim is 10–20×) |
+| Generated code speed | `tpde-bench runtime` over `src/benchmarks`, built `-O0` vs `--backend tpde` | ≤1.0× LLVM -O0 runtime (Braun SSA should beat -O0) |
 | Code size | text section size | ≤1.3× LLVM -O0 |
 | Scaling | TPDE's `tpde-llvm/test/benchmark` generators (many-values, switch, irreducible loops, many-funcs, call-chain) rewritten for TIR / Coil | linear |
 | Port quality | our TIR compile vs C++ `tpde_test` on the same large inputs | within 2× of C++ throughput |
@@ -97,3 +156,5 @@ each row.
 - **M3** Coil: tree → SSA (Braun) lowering, adaptor, `--backend tpde`; corpus lane green.
 - **M4** Performance gates and self-host.
 - **M5** x86-64 ELF.
+
+Status (2026-10-25): M0–M4 done; every gate above is green (BENCH.md).

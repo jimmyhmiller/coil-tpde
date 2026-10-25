@@ -20,95 +20,10 @@
 (import "coil.str" :use [StrBuf parse-int])
 (import "coil.slice" :use [subslice])
 (import "coil.arraylist" :use [ArrayList])
-(import "coil.subprocess" :as sp)
-(import "coil.time" :as time)
-(import "coil.cancellation" :as cancellation)
 (import "coil.primitive" :as primitive)
+(import "tpde.tools.proc" :use *)
 
 (const OUT-DIR "/tmp/tpde-bench")
-
-; ---- strings ----
-
-(defn cat2 [(x (slice u8)) (y (slice u8))] (-> (slice u8))
-  (let [(mut b) (StrBuf::new (malloc-allocator))]
-    (push-str! (mut b) x)
-    (push-str! (mut b) y)
-    (finish! (mut b))))
-
-(defn cat3 [(x (slice u8)) (y (slice u8)) (z (slice u8))] (-> (slice u8)) (cat2 (cat2 x y) z))
-
-(defn ends-with? [(s (slice u8)) (suffix (slice u8))] (-> bool)
-  (and (>= (len s) (len suffix)) (= (subslice s (- (len s) (len suffix)) (len s)) suffix)))
-
-(defn space? [(c u8)] (-> bool) (or (= c #\space) (= c #\tab) (= c (: 13 u8))))
-
-;;; The whitespace-separated words of `line`.
-(defn words [(line (slice u8))] (-> (ArrayList (slice u8)))
-  (let [(mut out) (ArrayList::new [(slice u8)] (malloc-allocator))
-        n (len line)
-        (mut i) 0]
-    (while (< i n)
-      (while (and (< i n) (space? (get line i))) (set! i (+ i 1)))
-      (let [start i]
-        (while (and (< i n) (not (space? (get line i)))) (set! i (+ i 1)))
-        (when (> i start) (push! (mut out) (subslice line start i)))))
-    out))
-
-;;; The lines of `text`.
-(defn lines [(text (slice u8))] (-> (ArrayList (slice u8)))
-  (let [(mut out) (ArrayList::new [(slice u8)] (malloc-allocator))
-        n (len text)
-        (mut start) 0]
-    (for i (range 0 n)
-      (when (= (get text i) #\newline)
-        (push! (mut out) (subslice text start i))
-        (set! start (+ i 1))))
-    (when (< start n) (push! (mut out) (subslice text start n)))
-    out))
-
-; ---- processes ----
-
-(defstruct Ran
-  [(started bool)
-   (code i64)      ; exit status, or 128 + signal
-   (timed-out bool)
-   (out (slice u8))
-   (err (slice u8))
-   (us i64)])      ; wall time in microseconds
-
-(defn now-us [] (-> i64)
-  (match (time/monotonic-now)
-    (Ok [t] (+ (* (.sec t) 1000000) (/ (.nsec t) 1000)))
-    (Err [_] 0)))
-
-;;; Run `prog` with `argv` (not including argv[0]) for at most `timeout-s`
-;;; seconds, capturing its output.
-(defn run-cmd [(prog (slice u8)) (argv (slice (slice u8))) (timeout-s i64)] (-> Ran)
-  (run-in "" prog argv timeout-s))
-
-;;; `run-cmd` in directory `cwd` ("" for this one).
-(defn run-in [(cwd (slice u8)) (prog (slice u8)) (argv (slice (slice u8))) (timeout-s i64)] (-> Ran)
-  (let [a (malloc-allocator)
-        deadline (match (time/Duration::seconds timeout-s)
-                   (Ok [d] (match (time/Instant::from-now d) (Ok [i] (Some i)) (Err [_] (None [time/Instant]))))
-                   (Err [_] (None [time/Instant])))
-        grace (match (time/Duration::millis 200) (Ok [d] d) (Err [_] (time/Duration :sec 0 :nsec 0)))
-        opts (sp/RunOptions::new prog argv cwd 268435456 268435456 deadline
-                                 (primitive/cast (ptr cancellation/Cancellation) 0) grace)
-        (mut res) (primitive/zeroed sp/RunResult)
-        t0 (now-us)]
-    (match (sp/run a (mut res) opts)
-      (Ok [_]
-          (Ran :started true
-               :code (match (.status res) (sp/Exited [c] c) (sp/Signaled [s] (+ 128 s)))
-               :timed-out (.timed-out res)
-               :out (.stdout res) :err (.stderr res) :us (- (now-us) t0)))
-      (Err [_] (Ran :started false :code -1 :timed-out false :out "" :err "" :us 0)))))
-
-(defn argv-of [(xs (ArrayList (slice u8)))] (-> (slice (slice u8))) (slice xs))
-
-(defn list1 [(x (slice u8))] (-> (ArrayList (slice u8)))
-  (let [(mut l) (ArrayList::new [(slice u8)] (malloc-allocator))] (push! (mut l) x) l))
 
 ;;; `coil build SRC -o OUT FLAGS...`
 (defn build [(coil (slice u8)) (src (slice u8)) (out (slice u8)) (flags (slice (slice u8)))] (-> Ran)
@@ -201,25 +116,7 @@
 
 ; ---- examples ----
 
-(defn coil-files [(dir (slice u8))] (-> (ArrayList (slice u8)))
-  (let [(mut out) (ArrayList::new [(slice u8)] (malloc-allocator))]
-    (match (fs/Directory::list (malloc-allocator) dir)
-      (Ok [names]
-          (for i (range 0 (len names))
-            (let [nm (get names i)]
-              (when (ends-with? nm ".coil") (push! (mut out) nm))))
-          0)
-      (Err [_] (eprintln "cannot list {}" dir) 0))
-    ; directory order is arbitrary; sort for a stable report
-    (let [n (len out)]
-      (for i (range 1 n)
-        (let [x (get out i)
-              (mut j) i]
-          (while (and (> j 0) (> (get out (- j 1)) x))
-            (set! (mut out) j (get out (- j 1)))
-            (set! j (- j 1)))
-          (set! (mut out) j x))))
-    out))
+(defn coil-files [(dir (slice u8))] (-> (ArrayList (slice u8))) (coil-files-in dir ".coil"))
 
 (defn stem [(name (slice u8))] (-> (slice u8)) (subslice name 0 (- (len name) 5)))
 

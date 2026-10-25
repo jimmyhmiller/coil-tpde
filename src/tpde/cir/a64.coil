@@ -1087,7 +1087,7 @@
         (a64/call-begin! c true)
         (if (>= target 0)
             (let [regs (add-args! c inst (: 0 u32))]
-              (core/call-evict-clobbered! c regs)
+              (core/tail-call-prepare! c)
               (a64/tail-jump! c (cast u32 target)))
             (let [(mut tv) (core/val-ref! c (opv c inst (: 0 u32)))
                   (mut tp) (core/vr-part c (cast (ptr ValueRef) (mut tv)) (: 0 u32))
@@ -1095,7 +1095,7 @@
               (core/vp-reload-into! c (mut tp) (: 16 u8) (: 8 u32))
               (core/vp-reset! c (mut tp))
               (core/vr-reset! c (mut tv))
-              (core/call-evict-clobbered! c regs)
+              (core/tail-call-prepare! c)
               (a64/tail-jump! c (core/none))))
         ; the results of a tail call are never used here; bind them for the counts
         (let [n (cast i64 (.aux (vx c inst)))]
