@@ -1,0 +1,206 @@
+;;; Builds CIR functions with the builder (Braun SSA for variables), compiles them
+;;; with tpde and writes a Mach-O object; tests/cir_test.c links and checks it.
+(module tpde.tests.cir)
+(import "coil.alloc" :use [malloc-allocator])
+(import "coil.arraylist" :use [ArrayList])
+(import "coil.fs" :as fs)
+(import "tpde.cir" :as cir :use [Func])
+(import "tpde.cir.adaptor")
+(import "tpde.cir.a64" :as isel)
+(import "tpde.core" :as core :use [Compiler])
+(import "tpde.asm" :as asm :use [Asm])
+(import "tpde.macho" :as macho)
+(import "tpde.buf" :as buf :use [Buf])
+
+(defn list [] (-> (ArrayList u32)) (ArrayList::new [u32] (malloc-allocator)))
+(defn tys [] (-> (ArrayList u8)) (ArrayList::new [u8] (malloc-allocator)))
+
+;; sum_to(n): acc = 0; i = 0; while (i < n) { acc += i * i; i += 1 } return acc
+(defn build-sum! [(f (ptr Func))] (-> void)
+  (cir/reset! f "sum_to")
+  (let [entry (cir/new-block! f)
+        head (cir/new-block! f)
+        body (cir/new-block! f)
+        exit (cir/new-block! f)]
+    (cir/set-block! f entry)
+    (cir/seal! f entry)
+    (let [n (cir/arg! f cir/T-I64 false)
+          acc (cir/new-var! f cir/T-I64)
+          i (cir/new-var! f cir/T-I64)]
+      (cir/def-var! f acc (cir/iconst! f 0))
+      (cir/def-var! f i (cir/iconst! f 0))
+      (cir/br! f head)
+      (cir/set-block! f head)
+      (let [cmp (cir/op2! f cir/OP-ICMP cir/T-I64 (cir/use-var! f i) n cir/P-SLT 0)]
+        (cir/condbr! f cmp body exit))
+      (cir/set-block! f body)
+      (cir/seal! f body)
+      (let [iv (cir/use-var! f i)
+            sq (cir/op2! f cir/OP-MUL cir/T-I64 iv iv 0 0)
+            a2 (cir/op2! f cir/OP-ADD cir/T-I64 (cir/use-var! f acc) sq 0 0)]
+        (cir/def-var! f acc a2)
+        (cir/def-var! f i (cir/op2! f cir/OP-ADD cir/T-I64 iv (cir/iconst! f 1) 0 0))
+        (cir/br! f head))
+      (cir/seal! f head)
+      (cir/set-block! f exit)
+      (cir/seal! f exit)
+      (cir/ret1! f (cir/use-var! f acc))
+      (cir/finish! f))))
+
+;; fib(n) = n < 2 ? n : fib(n-1) + fib(n-2)
+(defn build-fib! [(f (ptr Func)) (self-sym u32)] (-> void)
+  (cir/reset! f "fib")
+  (let [entry (cir/new-block! f)
+        rec (cir/new-block! f)
+        base (cir/new-block! f)]
+    (cir/set-block! f entry)
+    (cir/seal! f entry)
+    (let [n (cir/arg! f cir/T-I64 false)
+          c (cir/op2! f cir/OP-ICMP cir/T-I64 n (cir/iconst! f 2) cir/P-SLT 0)]
+      (cir/condbr! f c base rec)
+      (cir/seal! f base)
+      (cir/seal! f rec)
+      (cir/set-block! f base)
+      (cir/ret1! f n)
+      (cir/set-block! f rec)
+      (let [(mut a1) (list) (mut fl) (list) (mut rt) (tys)]
+        (push! (mut a1) (cir/op2! f cir/OP-SUB cir/T-I64 n (cir/iconst! f 1) 0 0))
+        (push! (mut fl) (: 0 u32))
+        (push! (mut rt) (cast u8 cir/T-I64))
+        (let [r1 (cir/call! f self-sym (cir/none) (cast (ptr (ArrayList u32)) (mut a1)) (cast (ptr (ArrayList u32)) (mut fl))
+                            (cast (ptr (ArrayList u8)) (mut rt)) false)
+              (mut a2) (list)]
+          (push! (mut a2) (cir/op2! f cir/OP-SUB cir/T-I64 n (cir/iconst! f 2) 0 0))
+          (let [r2 (cir/call! f self-sym (cir/none) (cast (ptr (ArrayList u32)) (mut a2)) (cast (ptr (ArrayList u32)) (mut fl))
+                              (cast (ptr (ArrayList u8)) (mut rt)) false)]
+            (cir/ret1! f (cir/op2! f cir/OP-ADD cir/T-I64 r1 r2 0 0)))))
+      (cir/finish! f))))
+
+;; count_down(n, acc): n == 0 ? acc : count_down(n - 1, acc + n) as a tail call
+(defn build-tail! [(f (ptr Func)) (self-sym u32)] (-> void)
+  (cir/reset! f "count_down")
+  (let [entry (cir/new-block! f)
+        done (cir/new-block! f)
+        more (cir/new-block! f)]
+    (cir/set-block! f entry)
+    (cir/seal! f entry)
+    (let [n (cir/arg! f cir/T-I64 false)
+          acc (cir/arg! f cir/T-I64 false)
+          z (cir/op2! f cir/OP-ICMP cir/T-I64 n (cir/iconst! f 0) cir/P-EQ 0)]
+      (cir/condbr! f z done more)
+      (cir/seal! f done)
+      (cir/seal! f more)
+      (cir/set-block! f done)
+      (cir/ret1! f acc)
+      (cir/set-block! f more)
+      (let [(mut a) (list) (mut fl) (list) (mut rt) (tys)]
+        (push! (mut a) (cir/op2! f cir/OP-SUB cir/T-I64 n (cir/iconst! f 1) 0 0))
+        (push! (mut a) (cir/op2! f cir/OP-ADD cir/T-I64 acc n 0 0))
+        (push! (mut fl) (: 0 u32))
+        (push! (mut fl) (: 0 u32))
+        (push! (mut rt) (cast u8 cir/T-I64))
+        (cir/call! f self-sym (cir/none) (cast (ptr (ArrayList u32)) (mut a)) (cast (ptr (ArrayList u32)) (mut fl))
+                   (cast (ptr (ArrayList u8)) (mut rt)) true))
+      (cir/finish! f))))
+
+;; mem(p, n): struct copy through an alloca and pointer arithmetic
+;; long mem(long *p, long n) { long tmp[4]; memcpy(tmp, p, 32); return tmp[0] + tmp[3] * n + p[n]; }
+(defn build-mem! [(f (ptr Func))] (-> void)
+  (cir/reset! f "mem")
+  (let [entry (cir/new-block! f)]
+    (cir/set-block! f entry)
+    (cir/seal! f entry)
+    (let [p (cir/arg! f cir/T-I64 false)
+          n (cir/arg! f cir/T-I64 false)
+          tmp (cir/alloca! f 32 8)]
+      (cir/op2! f cir/OP-MEMCPY cir/T-VOID tmp p 32 0)
+      (let [a (cir/load-mem! f cir/T-I64 tmp 0 8 false)
+            b (cir/load-mem! f cir/T-I64 tmp 24 8 false)
+            pn (cir/op2! f cir/OP-PTRADD cir/T-I64 p n 8 0)
+            c (cir/load-mem! f cir/T-I64 pn 0 8 false)
+            bn (cir/op2! f cir/OP-MUL cir/T-I64 b n 0 0)
+            s1 (cir/op2! f cir/OP-ADD cir/T-I64 a bn 0 0)]
+        (cir/store-mem! f tmp (cir/op2! f cir/OP-ADD cir/T-I64 s1 c 0 0) 8 8)
+        (cir/ret1! f (cir/load-mem! f cir/T-I64 tmp 8 8 false)))
+      (cir/finish! f))))
+
+;; fpoly(x) = x*x*0.5 + 1.25 (double), and fconv(x: float) -> long (trunc)
+(defn build-float! [(f (ptr Func))] (-> void)
+  (cir/reset! f "fpoly")
+  (let [entry (cir/new-block! f)]
+    (cir/set-block! f entry)
+    (cir/seal! f entry)
+    (let [x (cir/arg! f cir/T-F64 false)
+          xx (cir/op2! f cir/OP-FMUL cir/T-F64 x x 0 0)
+          h (cir/op2! f cir/OP-FMUL cir/T-F64 xx (cir/const! f cir/T-F64 (: 0x3FE0000000000000 u64) (: 0 u64)) 0 0)
+          r (cir/op2! f cir/OP-FADD cir/T-F64 h (cir/const! f cir/T-F64 (: 0x3FF4000000000000 u64) (: 0 u64)) 0 0)]
+      (cir/ret1! f r)
+      (cir/finish! f))))
+
+;; mul128(a, b) = ((i128)a * b) >> 64  and add128 via pair
+(defn build-i128! [(f (ptr Func))] (-> void)
+  (cir/reset! f "mulhi_signed")
+  (let [entry (cir/new-block! f)]
+    (cir/set-block! f entry)
+    (cir/seal! f entry)
+    (let [a (cir/arg! f cir/T-I64 false)
+          b (cir/arg! f cir/T-I64 false)
+          wa (cir/op1! f cir/OP-SEXT cir/T-I128 a 64 0)
+          wb (cir/op1! f cir/OP-SEXT cir/T-I128 b 64 0)
+          p (cir/op2! f cir/OP-MUL cir/T-I128 wa wb 0 0)
+          sh (cir/op2! f cir/OP-ASHR cir/T-I128 p (cir/iconst! f 64) 0 0)]
+      (cir/ret1! f (cir/op1! f cir/OP-LO cir/T-I64 sh 0 0))
+      (cir/finish! f))))
+
+;; classify(x): switch x { 1 -> 10, 2 -> 20, 7 -> 70, default -> -1 } with a PHI merge
+(defn build-switch! [(f (ptr Func))] (-> void)
+  (cir/reset! f "classify")
+  (let [entry (cir/new-block! f)
+        b1 (cir/new-block! f) b2 (cir/new-block! f) b7 (cir/new-block! f) bd (cir/new-block! f)
+        merge (cir/new-block! f)]
+    (cir/set-block! f entry)
+    (cir/seal! f entry)
+    (let [x (cir/arg! f cir/T-I64 false)
+          r (cir/new-var! f cir/T-I64)
+          (mut vals) (ArrayList::new [u64] (malloc-allocator))
+          (mut tgts) (list)]
+      (push! (mut vals) (: 1 u64)) (push! (mut tgts) b1)
+      (push! (mut vals) (: 2 u64)) (push! (mut tgts) b2)
+      (push! (mut vals) (: 7 u64)) (push! (mut tgts) b7)
+      (cir/switch! f x bd (cast (ptr (ArrayList u64)) (mut vals)) (cast (ptr (ArrayList u32)) (mut tgts)))
+      (for b [b1 b2 b7 bd] (cir/seal! f b))
+      (cir/set-block! f b1) (cir/def-var! f r (cir/iconst! f 10)) (cir/br! f merge)
+      (cir/set-block! f b2) (cir/def-var! f r (cir/iconst! f 20)) (cir/br! f merge)
+      (cir/set-block! f b7) (cir/def-var! f r (cir/iconst! f 70)) (cir/br! f merge)
+      (cir/set-block! f bd) (cir/def-var! f r (cir/iconst! f -1)) (cir/br! f merge)
+      (cir/seal! f merge)
+      (cir/set-block! f merge)
+      (cir/ret1! f (cir/use-var! f r))
+      (cir/finish! f))))
+
+(defn main [] (-> i64)
+  (let [(mut a) (Asm::new)
+        ap (cast (ptr Asm) (mut a))
+        (mut f) (Func::new)
+        fp (cast (ptr Func) (mut f))
+        (mut c) (Compiler::new [Func] fp ap core/ARCH-A64)
+        cp (cast (ptr (Compiler Func)) (mut c))
+        names ["sum_to" "fib" "count_down" "mem" "fpoly" "mulhi_signed" "classify"]
+        (mut syms) (list)]
+    (for nm names (push! (mut syms) (asm/sym-add-def! ap nm -2 0 0 (: 1 u8))))
+    (let [(mut ok) true]
+      (build-sum! fp) (set! ok (and ok (isel/compile! cp (get syms 0))))
+      (build-fib! fp (get syms 1)) (set! ok (and ok (isel/compile! cp (get syms 1))))
+      (build-tail! fp (get syms 2)) (set! ok (and ok (isel/compile! cp (get syms 2))))
+      (build-mem! fp) (set! ok (and ok (isel/compile! cp (get syms 3))))
+      (build-float! fp) (set! ok (and ok (isel/compile! cp (get syms 4))))
+      (build-i128! fp) (set! ok (and ok (isel/compile! cp (get syms 5))))
+      (build-switch! fp) (set! ok (and ok (isel/compile! cp (get syms 6))))
+      (if (not ok)
+          (do (eprintln "compile failed") 1)
+          (let [(mut out) (Buf::new)
+                op (cast (ptr Buf) (mut out))]
+            (macho/write-object! ap op)
+            (fs/write-file (malloc-allocator) "build/cir_test.o" (buf/as-slice op))
+            (println "wrote build/cir_test.o")
+            0)))))

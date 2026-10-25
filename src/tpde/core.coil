@@ -235,6 +235,8 @@
    (unresolved-cond u32)
    (unresolved-test u32)
    (pending-since u32)
+   ; tail calls: label << 32 | symbol (NONE: through x16), stubs emitted at the end
+   (tail-stubs (ArrayList u64))
    (no-fixed bool)])
 
 (impl [A] (Compiler A)
@@ -257,6 +259,7 @@
       (set! (.func-syms c) (ArrayList::new [u32] al))
       (set! (.ret-offs c) (ArrayList::new [u32] al))
       (set! (.veneers c) (ArrayList::new [u32] al))
+      (set! (.tail-stubs c) (ArrayList::new [u64] al))
       (set! (.cc c) (cc-new true))
       (set! (.variable-ref-list c) (none))
       c)))

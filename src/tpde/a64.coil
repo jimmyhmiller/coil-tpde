@@ -333,6 +333,7 @@
 
 (defn start-func! [A] [(c (ptr (Compiler A)))] (-> void)
   (clear! (mut (.ret-offs c)))
+  (clear! (mut (.tail-stubs c)))
   (clear! (mut (.veneers c)))
   (set! (.unresolved-cond c) (: 0 u32))
   (set! (.unresolved-test c) (: 0 u32))
@@ -401,6 +402,27 @@
             (if save (e/str-gp (r5 last) base fo (: 8 u32)) (e/ldr-gp (r5 last) base fo (: 8 u32) false))
             (if save (e/str-fp (r5 last) base fo (: 8 u32)) (e/ldr-fp (r5 last) base fo (: 8 u32))))))))
 
+(defn emit-epilogue! [A] [(c (ptr (Compiler A))) (saved u64) (frame u32) (needs-frame bool)] (-> void)
+  (when (.has-dynamic-alloca c) (emit! c (e/mov-sp (: 31 u32) (: 29 u32))))
+  (let [(mut epi) (buf/Buf::new)
+        ep (cast (ptr buf/Buf) (mut epi))]
+    (csr-seq! c saved false (: 31 u32) ep)
+    (for i (range 0 (/ (.len epi) 4)) (emit! c (buf/read32 ep (* i 4))))
+    (buf/buf-free! ep))
+  (when needs-frame
+    (if (<= frame (: 0x1f8 u32))
+        (emit! c (e/ldp-x-post (: 29 u32) (: 30 u32) (: 31 u32) (cast i64 frame)))
+        (do (emit! c (e/ldp-x (: 29 u32) (: 30 u32) (: 31 u32) 0))
+            (emit! c (e/add-imm true (: 31 u32) (: 31 u32) (cast i64 frame)))))))
+
+;;; A tail call after the arguments were added: branch to a per-site stub that
+;;; runs the epilogue and jumps to `sym` (NONE: to x16).
+(defn tail-jump! [A] [(c (ptr (Compiler A))) (sym u32)] (-> void)
+  (set! (.generated-call c) true)
+  (let [l (core/label-create! c)]
+    (push! (mut (.tail-stubs c)) (| (<< (cast u64 l) (: 32 u64)) (cast u64 sym)))
+    (raw-jump! c (core/jmp) l)))
+
 (defn finish-func! [A] [(c (ptr (Compiler A))) (sym u32)] (-> void)
   (let [t (.text c)
         saved (& (.clobbered c) (callee-saved))
@@ -438,18 +460,19 @@
         (for i (range 0 (len (.ret-offs c)))
           (let [ro (get (.ret-offs c) i)]
             (buf/patch32! t (cast i64 ro) (e/b (/ (- (cast i64 (off c)) (cast i64 ro)) 4)))))
-        (when (.has-dynamic-alloca c) (emit! c (e/mov-sp (: 31 u32) (: 29 u32))))
-        (let [(mut epi) (buf/Buf::new)
-              ep (cast (ptr buf/Buf) (mut epi))]
-          (csr-seq! c saved false (: 31 u32) ep)
-          (for i (range 0 (/ (.len epi) 4)) (emit! c (buf/read32 ep (* i 4))))
-          (buf/buf-free! ep))
-        (when needs-frame
-          (if (<= frame (: 0x1f8 u32))
-              (emit! c (e/ldp-x-post (: 29 u32) (: 30 u32) (: 31 u32) (cast i64 frame)))
-              (do (emit! c (e/ldp-x (: 29 u32) (: 30 u32) (: 31 u32) 0))
-                  (emit! c (e/add-imm true (: 31 u32) (: 31 u32) (cast i64 frame))))))
+        (emit-epilogue! c saved frame needs-frame)
         (emit! c (e/ret)))
+      ; tail calls: each site branches to its own epilogue + jump
+      (for i (range 0 (len (.tail-stubs c)))
+        (let [ts (get (.tail-stubs c) i)
+              label (cast u32 (>> ts (: 32 u64)))
+              sym (cast u32 (& ts (: 0xFFFFFFFF u64)))]
+          (core/label-place! c label)
+          (emit-epilogue! c saved frame needs-frame)
+          (if (= sym (core/none))
+              (emit! c (e/br (: 16 u32)))
+              (do (asm/reloc! (.asm c) asm/SEC-TEXT (cast i64 (off c)) sym asm/R-BRANCH26 0)
+                  (emit! c (e/b 0))))))
       ; cut the unused prologue space and shift everything after it
       (let [cut-at (+ start pro-size)
             cut (- (.prologue-alloc c) pro-size)]

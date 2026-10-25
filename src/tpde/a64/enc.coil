@@ -472,3 +472,10 @@
                                     :else (movk sf rd h (cast u32 i))))
                       (set! n (+ n 1)))))
                 n))))))
+
+; ---- a few SIMD forms (popcount) ----
+;; cnt vd.8b, vn.8b
+(defn cnt-8b [(rd u32) (rn u32)] (-> u32) (| (: 0x0E205800 u32) (<< (r rn) (: 5 u32)) (r rd)))
+;; addv bd, vn.8b
+(defn addv-8b [(rd u32) (rn u32)] (-> u32) (| (: 0x0E31B800 u32) (<< (r rn) (: 5 u32)) (r rd)))
+;; fmov xd, dn / umov wd, vn.b[0] etc. are covered by fmov-to-gp

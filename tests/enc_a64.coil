@@ -168,6 +168,8 @@
   (t (e/casal (u 3) (u 1) (u 0) (u 2)) "casal x1, x0, [x2]")
   (t (e/ldar (u 3) (u 0) (u 2)) "ldar x0, [x2]")
   (t (e/stlr (u 0) (u 0) (u 2)) "stlrb w0, [x2]")
+  (t (e/cnt-8b (u 0) (u 1)) "cnt v0.8b, v1.8b")
+  (t (e/addv-8b (u 0) (u 1)) "addv b0, v1.8b")
   ; mov-const sequences
   (let [(mut buf) [(: 0 u32) (: 0 u32) (: 0 u32) (: 0 u32)]
         p (cast (ptr u32) (mut buf))
