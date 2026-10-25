@@ -629,7 +629,9 @@
 
 ;;; tests/cir_test.coil builds CIR functions with the builder (Braun SSA) and
 ;;; compiles them to build/cir_test.o; tests/cir_test.c calls and checks them.
-(defn cir-test [] (-> i64)
+(defn cir-test [] (-> i64) (+ (cir-test-arch "arm64" "build/cir_test.o") (cir-test-arch "x86_64" "build/cir_test_x64.o")))
+
+(defn cir-test-arch [(arch (slice u8)) (obj (slice u8))] (-> i64)
   (let [(mut bv) (list1 "build")]
     (push! (mut bv) "tests/cir_test.coil")
     (push! (mut bv) "-o")
@@ -637,15 +639,18 @@
     (push! (mut bv) "--quiet")
     (let [b (run-cmd "coil" (argv-of bv) 600)
           g (if (= (.code b) 0) (run-cmd "build/cir_test" (argv-of (new-list)) 60) b)
-          (mut lv) (list1 "tests/cir_test.c")]
-      (push! (mut lv) "build/cir_test.o")
+          exe (cat3 TMP "/cir_test_" arch)
+          (mut lv) (list1 "-arch")]
+      (push! (mut lv) arch)
+      (push! (mut lv) "tests/cir_test.c")
+      (push! (mut lv) obj)
       (push! (mut lv) "-o")
-      (push! (mut lv) (cat2 TMP "/cir_test"))
+      (push! (mut lv) exe)
       (let [l (if (= (.code g) 0) (run-cmd "cc" (argv-of lv) 120) g)
-            r (if (= (.code l) 0) (run-cmd (cat2 TMP "/cir_test") (argv-of (new-list)) 60) l)]
+            r (if (= (.code l) 0) (run-cmd exe (argv-of (new-list)) 60) l)]
         (if (and (= (.code r) 0) (= (.out r) "ok\n"))
-            (do (println "ok   cir_test") 0)
-            (do (println "FAIL cir_test: exit {}\n{}{}" (.code r) (.out r) (.err r)) 1))))))
+            (do (println "ok   cir_test ({})" arch) 0)
+            (do (println "FAIL cir_test ({}): exit {}\n{}{}" arch (.code r) (.out r) (.err r)) 1))))))
 
 ; ============================ main ===========================================
 

@@ -179,11 +179,15 @@
       (cir/finish! f))))
 
 (defn main [] (-> i64)
+  (+ (build-all core/ARCH-A64 "build/cir_test.o") (build-all core/ARCH-X64 "build/cir_test_x64.o")))
+
+;;; Build and compile every test function for `arch` into a Mach-O object.
+(defn build-all [(arch u8) (path (slice u8))] (-> i64)
   (let [(mut a) (Asm::new)
         ap (cast (ptr Asm) (mut a))
         (mut f) (Func::new)
         fp (cast (ptr Func) (mut f))
-        (mut c) (Compiler::new [Func] fp ap core/ARCH-A64)
+        (mut c) (Compiler::new [Func] fp ap arch)
         cp (cast (ptr (Compiler Func)) (mut c))
         names ["sum_to" "fib" "count_down" "mem" "fpoly" "mulhi_signed" "classify"]
         (mut syms) (list)]
@@ -200,7 +204,7 @@
           (do (eprintln "compile failed") 1)
           (let [(mut out) (Buf::new)
                 op (cast (ptr Buf) (mut out))]
-            (macho/write-object! ap op)
-            (fs/write-file (malloc-allocator) "build/cir_test.o" (buf/as-slice op))
-            (println "wrote build/cir_test.o")
+            (if (= arch core/ARCH-X64) (macho/write-object-x64! ap op) (macho/write-object! ap op))
+            (fs/write-file (malloc-allocator) path (buf/as-slice op))
+            (println "wrote {}" path)
             0)))))

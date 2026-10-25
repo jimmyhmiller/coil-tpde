@@ -6,6 +6,7 @@
 (import "tpde.core" :as core :use [Compiler])
 (import "tpde.cir" :as cir :use [Func Value Block])
 (import "tpde.cir.a64" :as isel)
+(import "tpde.cir.x64" :as xisel)
 
 (defn u32-of [(x i64)] (-> u32) (cast u32 x))
 (defn i64-of [(x u32)] (-> i64) (cast i64 x))
@@ -135,4 +136,4 @@
     (isel/begin-func! c)
     true)
   (compile-inst! [(self (ptr Func)) (c (ptr (Compiler Func))) (inst u32)] (-> bool)
-    (isel/compile-inst! c inst)))
+    (if (core/x64? c) (xisel/compile-inst! c inst) (isel/compile-inst! c inst))))
