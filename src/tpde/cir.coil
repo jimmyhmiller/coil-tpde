@@ -87,6 +87,10 @@
 (const OP-RET 101)    ; operands = returned values, in register order
 (const OP-TAILCALL 102)
 (const OP-MACHINE 103) ; inline bytes: imm = index into the byte pool
+;; A call under a register-pinned convention: argument i in register
+;; argflags[i]; imm = symbol (-1: inline bytes `block`..`block+next` of the byte
+;; pool), imm2 = clobbered-register mask, aux = result register (255: none).
+(const OP-SHIMCALL 104)
 ; control
 (const OP-BR 110)
 (const OP-CONDBR 111) ; (cond) then, else
@@ -425,6 +429,21 @@
       (let [r (push-value! f OP-CALLRES (cast i64 (get (load rtypes) i)) (- i 1) 0)]
         (set! (.block (val f r)) v)))
     (when tail (set! (.term (blk f (.cur f))) v))
+    v))
+
+;;; A call under a :shim convention (see OP-SHIMCALL).
+(defn shimcall! [(f (ptr Func)) (target u32) (args (ptr (ArrayList u32))) (regs (ptr (ArrayList u32)))
+                 (ret-reg u32) (clobber u64) (bytes (slice u8)) (rty i64)] (-> u32)
+  (set! (.has-calls f) true)
+  (let [v (inst! f OP-SHIMCALL rty (if (= target (none)) -1 (i64-of target)) (cast i64 clobber))
+        n (len (load args))]
+    (for i (range 0 n) (push-operand! f (get (load args) i) (get (load regs) i)))
+    (set-ops! f v (u32-of n) (u32-of n))
+    (let [x (val f v)]
+      (set! (.aux x) (cast u8 ret-reg))
+      (set! (.block x) (u32-of (len (.bytes f))))
+      (set! (.next x) (u32-of (len bytes))))
+    (for i (range 0 (len bytes)) (push! (mut (.bytes f)) (get bytes i)))
     v))
 
 ;;; The i-th result of a call (0 is the call itself).

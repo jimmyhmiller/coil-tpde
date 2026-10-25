@@ -18,6 +18,7 @@
 (import "tpde.asm" :as asm)
 (import "tpde.cir" :as cir :use [Func Value])
 (import "tpde.cir.adaptor")
+(import "tpde.buf")
 
 (defn r5 [(r u8)] (-> u32) (& (cast u32 r) (: 31 u32)))
 (defn u [(x i64)] (-> u32) (primitive/cast u32 x))
@@ -1148,6 +1149,68 @@
     (core/ret-finish! c regs)
     true))
 
+;;; A :shim call: arguments in pinned registers; only the convention's clobbers
+;;; are lost (evicted, or saved around the call when they hold fixed values or
+;;; the frame pointer).
+(defn shimcall! [(c (ptr (Compiler Func))) (inst u32)] (-> bool)
+  (let [f (fn-of c)
+        x (load (vx c inst))
+        clob (cast u64 (.imm2 x))
+        ret (.aux x)
+        (mut argmask) (: 0 u64)]
+    (for i (range 0 (cast i64 (.nops x)))
+      (let [v (cir/operand f (vx c inst) (cast u32 i))
+            r (cast u8 (get (.argflags f) (+ (cast i64 (.opb x)) i)))
+            (mut vr) (core/val-ref! c v)
+            (mut vp) (core/vr-part c (cast (ptr ValueRef) (mut vr)) (: 0 u32))]
+        (when (core/reg-fixed? c r) (core/fatal "a :shim argument register holds a fixed value"))
+        (if (and (core/vp-in-reg? c (cast (ptr ValuePart) (mut vp)) r) (core/vp-can-salvage? c (cast (ptr ValuePart) (mut vp))))
+            (core/vp-salvage! c (mut vp))
+            (do (when (core/reg-used? c r) (core/evict-reg! c r))
+                (core/vp-reload-into! c (mut vp) r (: 8 u32))))
+        (core/vp-reset! c (mut vp))
+        (core/vr-reset! c (mut vr))
+        (core/mark-clobbered! c r)
+        (set! (.allocatable c) (& (.allocatable c) (^ (core/bit r) (: 0xFFFFFFFFFFFFFFFF u64))))
+        (set! argmask (| argmask (core/bit r)))))
+    ; the clobbered registers, the result register too
+    (let [kill (| (| clob (if (!= ret (: 255 u8)) (core/bit ret) (: 0 u64)))
+                  ; a branch-and-link writes lr
+                  (if (>= (.imm x) 0) (core/bit (: 30 u8)) (: 0 u64)))
+          (mut saves) (ArrayList::new [u8] (malloc-allocator))]
+      (let [(mut m) (& (& (.used c) kill) (^ argmask (: 0xFFFFFFFFFFFFFFFF u64)))]
+        (while (!= m (: 0 u64))
+          (let [r (core/ctz64 m)]
+            (set! m (& m (- m (: 1 u64))))
+            (if (core/reg-fixed? c r)
+                (push! (mut saves) r)
+                (core/evict-reg! c r)))))
+      (when (!= (& clob (core/bit (: 29 u8))) (: 0 u64)) (push! (mut saves) (: 29 u8)))
+      (for i (range 0 (/ (+ (len saves) 1) 2))
+        (let [a (get saves (* i 2))
+              b (if (< (+ (* i 2) 1) (len saves)) (get saves (+ (* i 2) 1)) (: 31 u8))]
+          (emit! c (e/stp-x-pre (r5 a) (r5 b) (: 31 u32) -16))))
+      (if (>= (.imm x) 0)
+          (do (set! (.generated-call c) true)
+              (asm/reloc! (.asm c) asm/SEC-TEXT (cast i64 (core/text-off c)) (cast u32 (.imm x)) asm/R-BRANCH26 0)
+              (emit! c (e/bl 0)))
+          (for k (range (cast i64 (.block x)) (+ (cast i64 (.block x)) (cast i64 (.next x))))
+            (tpde.buf/emit8! (.text c) (get (.bytes f) k))))
+      (let [(mut i) (- (/ (+ (len saves) 1) 2) 1)]
+        (while (>= i 0)
+          (let [a (get saves (* i 2))
+                b (if (< (+ (* i 2) 1) (len saves)) (get saves (+ (* i 2) 1)) (: 31 u8))]
+            (emit! c (e/ldp-x-post (r5 a) (r5 b) (: 31 u32) 16)))
+          (set! i (- i 1))))
+      (set! (.clobbered c) (| (.clobbered c) kill))
+      (free! (mut saves)))
+    (set! (.allocatable c) (| (.allocatable c) argmask))
+    (when (!= (cast i64 (.ty x)) cir/T-VOID)
+      (let [(mut res) (def! c inst)]
+        (core/vp-set-value-reg! c (mut (.vp res)) ret)
+        (done! c (mut res))))
+    true))
+
 ; ============================ control flow ==================================
 
 (defn block-target [(c (ptr (Compiler Func))) (inst u32) (i u32)] (-> u32)
@@ -1263,6 +1326,7 @@
       (= op cir/OP-FENCE) (do (emit! c (e/dmb-ish)) true)
       (= op cir/OP-CALL) (call! c inst)
       (= op cir/OP-TAILCALL) (tailcall! c inst)
+      (= op cir/OP-SHIMCALL) (shimcall! c inst)
       (= op cir/OP-RET) (ret! c inst)
       (= op cir/OP-BR) (do (core/generate-uncond-branch! c (block-target c inst (: 0 u32))) true)
       (= op cir/OP-CONDBR) (condbr! c inst)
