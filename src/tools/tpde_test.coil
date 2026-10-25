@@ -12,6 +12,8 @@
 (import "tpde.tir.cg" :as tircg)
 (import "tpde.asm" :as asm :use [Asm])
 (import "tpde.macho" :as macho)
+(import "tpde.elf" :as elf)
+(import "tpde.core" :as core)
 (import "tpde.buf" :as buf :use [Buf])
 
 (const RUN-IR 0)
@@ -20,7 +22,7 @@
 
 (defstruct Options
   [(print-ir bool) (print-rpo bool) (print-layout bool) (print-loops bool) (print-liveness bool)
-   (no-fixed bool) (run-until i64) (arch (slice u8)) (out (slice u8)) (path (slice u8))])
+   (no-fixed bool) (run-until i64) (arch (slice u8)) (out (slice u8)) (path (slice u8)) (macho bool)])
 
 (defn starts-with? [(s (slice u8)) (prefix (slice u8))] (-> bool)
   (and (>= (len s) (len prefix)) (= (subslice s 0 (len prefix)) prefix)))
@@ -31,7 +33,7 @@
 (defn parse-options [] (-> (Result Options (slice u8)))
   (let [(mut o) (Options :print-ir false :print-rpo false :print-layout false :print-loops false
                          :print-liveness false :no-fixed false :run-until RUN-FULL
-                         :arch "x64" :out "" :path "")
+                         :arch "x64" :out "" :path "" :macho false)
         (mut i) 1
         n (args/count)]
     (block :parse
@@ -51,6 +53,7 @@
                       (= v "full") (set! (.run-until o) RUN-FULL)
                       :else (return-from :parse (Err "invalid --run-until"))))
             (starts-with? a "--target=") (set! (.arch o) (after a "--target="))
+            (= a "--macho") (set! (.macho o) true)
             (starts-with? a "--arch=") (set! (.arch o) (after a "--arch="))
             (or (= a "-o") (= a "--obj-out"))
               (do (set! i (+ i 1)) (set! (.out o) (args/nth i)))
@@ -118,17 +121,22 @@
               :else (run-codegen irp o))))))))
 
 (defn run-codegen [(ir (ptr Tir)) (o Options)] (-> i64)
-  (if (not (or (= (.arch o) "a64") (= (.arch o) "aarch64") (= (.arch o) "arm64")))
-      (do (eprintln "only --target=aarch64 is implemented") 1)
+  (let [a64 (or (= (.arch o) "a64") (= (.arch o) "aarch64") (= (.arch o) "arm64"))
+        x64 (or (= (.arch o) "x64") (= (.arch o) "x86_64") (= (.arch o) "x86-64"))]
+    (if (not (or a64 x64))
+      (do (eprintln "unknown target {}" (.arch o)) 1)
       (let [(mut a) (Asm::new)
             ap (cast (ptr Asm) (mut a))]
-        (if (not (tircg/compile-module! ir ap (.no-fixed o)))
+        (if (not (tircg/compile-module! ir ap (.no-fixed o) (if x64 core/ARCH-X64 core/ARCH-A64)))
             (do (eprintln "Failed to compile IR") 1)
             (let [(mut out) (Buf::new)
                   op (cast (ptr Buf) (mut out))]
-              (macho/write-object! ap op)
+              ; arm64: Mach-O; x86-64: ELF as TPDE, or Mach-O with --macho
+              (cond a64 (macho/write-object! ap op)
+                    (.macho o) (macho/write-object-x64! ap op)
+                    :else (elf/write-object! ap op))
               (if (or (empty? (.out o)) (= (.out o) "-"))
                   (do (io/write-all (io/stdout) (cast (ptr i8) (.data out)) (.len out)) 0)
                   (match (fs/write-file (malloc-allocator) (.out o) (buf/as-slice op))
                     (Ok [_] 0)
-                    (Err [_] (eprintln "Failed to open output file") 1))))))))
+                    (Err [_] (eprintln "Failed to open output file") 1)))))))))

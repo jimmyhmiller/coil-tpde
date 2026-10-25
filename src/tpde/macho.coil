@@ -1,11 +1,12 @@
-;;; Mach-O MH_OBJECT writer for arm64 (TPDE only has ELF). Serializes a
-;;; `tpde.asm` Asm.
+;;; Mach-O MH_OBJECT writer for arm64 and x86-64 (TPDE only has ELF).
+;;; Serializes a `tpde.asm` Asm.
 ;;;
 ;;; Symbols get the C `_` prefix; anonymous ones become local `ltmpN`. The symbol
 ;;; table is ordered locals, external definitions, undefined, as LC_DYSYMTAB
 ;;; requires, and relocations are renumbered to match. A PAGE21/PAGEOFF12/
 ;;; BRANCH26 relocation with an addend is preceded by ARM64_RELOC_ADDEND; an
-;;; ABS64 addend is stored in the data, Mach-O's implicit addend.
+;;; ABS64 addend is stored in the data, Mach-O's implicit addend. On x86-64
+;;; every addend is implicit: it goes into the relocated field.
 (module tpde.macho)
 (import "coil.alloc" :use [malloc-allocator])
 (import "coil.arraylist" :use [ArrayList])
@@ -31,6 +32,20 @@
 
 (defn u32! [(out (ptr Buf)) (x i64)] (-> void) (buf/emit32! out (primitive/cast u32 x)))
 (defn u64! [(out (ptr Buf)) (x i64)] (-> void) (buf/emit64! out (primitive/cast u64 x)))
+
+; x86-64 relocation types
+(const X86-64-RELOC-UNSIGNED 0)
+(const X86-64-RELOC-SIGNED 1)
+(const X86-64-RELOC-BRANCH 2)
+(const X86-64-RELOC-GOT-LOAD 3)
+
+(defn reloc-type-x64 [(kind u8)] (-> i64)
+  (case (cast i64 kind)
+    5 X86-64-RELOC-UNSIGNED
+    6 X86-64-RELOC-SIGNED
+    7 X86-64-RELOC-BRANCH
+    8 X86-64-RELOC-GOT-LOAD
+    -1))
 
 (defn reloc-type [(kind u8)] (-> i64)
   (case (cast i64 kind)
@@ -75,7 +90,12 @@
 
 ;;; Serialize `a` as a Mach-O object into `out`. Writes ABS64 addends into the
 ;;; section data.
-(defn write-object! [(a (ptr Asm)) (out (ptr Buf))] (-> void)
+(defn write-object! [(a (ptr Asm)) (out (ptr Buf))] (-> void) (write! a out false))
+
+;;; The same for an x86-64 object.
+(defn write-object-x64! [(a (ptr Asm)) (out (ptr Buf))] (-> void) (write! a out true))
+
+(defn write! [(a (ptr Asm)) (out (ptr Buf)) (x64 bool)] (-> void)
   (let [al (malloc-allocator)
         nsect (len (.sects a))
         nsym (cast i64 (asm/sym-count a))
@@ -100,11 +120,14 @@
               0 (set! nlocal (+ nlocal 1))
               1 (set! nextdef (+ nextdef 1))
               (set! nundef (+ nundef 1)))))))
-    ; ---- implicit ABS64 addends go into the data
+    ; ---- implicit ABS64 addends go into the data (on x86-64, every addend)
     (for ri (range 0 nrel)
       (let [r (get (.relocs a) ri)]
-        (when (= (.kind r) (: 5 u8))
-          (buf/patch64! (asm/sect-buf a (.sect r)) (.off r) (cast u64 (.addend r))))))
+        (cond (= (.kind r) (: 5 u8))
+                (buf/patch64! (asm/sect-buf a (.sect r)) (.off r) (cast u64 (.addend r)))
+              x64
+                (buf/patch32! (asm/sect-buf a (.sect r)) (.off r) (cast u32 (.addend r)))
+              :else 0)))
     ; ---- section addresses (zero-fill sections last) and file offsets
     (let [(mut addrs) (ArrayList::new [i64] al)
           (mut sizes) (ArrayList::new [i64] al)
@@ -141,7 +164,7 @@
           (extend-zeroed! (mut nrelocs) nsect)
           (for ri (range 0 nrel)
             (let [r (get (.relocs a) ri)
-                  extra (if (and (!= (.addend r) 0) (!= (.kind r) (: 5 u8))) 2 1)]
+                  extra (if (and (not x64) (!= (.addend r) 0) (!= (.kind r) (: 5 u8))) 2 1)]
               (set! (mut nrelocs) (.sect r) (+ (get nrelocs (.sect r)) extra))))
           (for i (range 0 nsect)
             (when (> (get nrelocs i) 0)
@@ -159,8 +182,8 @@
             (buf/buf-reserve! out (+ stroff (.len strtab)))
             ; ---- header
             (u32! out 0xFEEDFACF)
-            (u32! out 0x0100000C)  ; CPU_TYPE_ARM64
-            (u32! out 0)
+            (u32! out (if x64 0x01000007 0x0100000C))  ; CPU_TYPE_X86_64 / ARM64
+            (u32! out (if x64 3 0))                    ; CPU_SUBTYPE_X86_64_ALL
             (u32! out 1)           ; MH_OBJECT
             (u32! out ncmds)
             (u32! out sizeofcmds)
@@ -230,11 +253,11 @@
               (for ri (range 0 nrel)
                 (let [r (get (.relocs a) ri)]
                   (when (= (.sect r) si)
-                    (let [rt (reloc-type (.kind r))
-                          pc (reloc-pcrel? (.kind r))
+                    (let [rt (if x64 (reloc-type-x64 (.kind r)) (reloc-type (.kind r)))
+                          pc (if x64 (!= (.kind r) (: 5 u8)) (reloc-pcrel? (.kind r)))
                           length (if (= (.kind r) (: 5 u8)) 3 2)
                           symnum (get perm (cast i64 (.sym r)))]
-                      (when (and (!= (.addend r) 0) (!= (.kind r) (: 5 u8)))
+                      (when (and (not x64) (!= (.addend r) 0) (!= (.kind r) (: 5 u8)))
                         (u32! out (.off r))
                         (u32! out (reloc-word (& (.addend r) 0xFFFFFF) false 2 false ARM64-RELOC-ADDEND)))
                       (u32! out (.off r))

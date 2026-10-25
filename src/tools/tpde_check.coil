@@ -423,6 +423,8 @@
 ;;; leading underscore.
 (defn disasm [(obj (slice u8))] (-> (slice u8))
   (let [(mut av) (list1 "-d")]
+    (push! (mut av) "-M")
+    (push! (mut av) "intel")
     (push! (mut av) "--no-show-raw-insn")
     (push! (mut av) "--symbolize-operands")
     (push! (mut av) "--no-addresses")
@@ -486,7 +488,8 @@
                     (for k (range 0 (len runs))
                       (let [run (get runs k)
                             ws (first-command run)]
-                        (when (and (contains-text? run "--target=aarch64") (contains-text? run "%objdump")
+                        (when (and (or (contains-text? run "--target=aarch64") (contains-text? run "--target=x86_64"))
+                                   (contains-text? run "%objdump")
                                    (> (len ws) 0) (or (= (get ws 0) "tpde_test") (= (get ws 0) "%tpde_test")))
                           (let [(mut av) (new-list)]
                             (for i (range 1 (len ws)) (push! (mut av) (if (= (get ws i) "%s") path (get ws i))))
@@ -596,26 +599,32 @@
   (let [names (coil-files-in "tests/tir" ".c")
         (mut bad) 0]
     (for i (range 0 (len names))
-      (let [nm (get names i)
-            base (subslice nm 0 (- (len nm) 2))
-            tir (cat3 "tests/tir/" base ".tir")
-            obj (cat3 TMP "/" (cat2 base ".o"))
-            exe (cat3 TMP "/" base)
-            (mut av) (list1 "--target=aarch64")]
-        (push! (mut av) tir)
-        (push! (mut av) "-o")
-        (push! (mut av) obj)
-        (let [c (run-cmd OURS (argv-of av) 120)
-              (mut lv) (list1 (cat2 "tests/tir/" nm))]
-          (push! (mut lv) obj)
-          (push! (mut lv) "-o")
-          (push! (mut lv) exe)
-          (let [l (if (= (.code c) 0) (run-cmd "cc" (argv-of lv) 120) c)
-                r (if (= (.code l) 0) (run-cmd exe (argv-of (new-list)) 60) l)]
-            (if (and (= (.code r) 0) (= (.out r) "ok\n"))
-                (println "ok   {}" base)
-                (do (println "FAIL {}: exit {}\n{}{}" base (.code r) (.out r) (.err r))
-                    (set! bad (+ bad 1))))))))
+      (for x (range 0 2)
+        (let [nm (get names i)
+              base (subslice nm 0 (- (len nm) 2))
+              arch (if (= x 0) "arm64" "x86_64")
+              tir (cat3 "tests/tir/" base ".tir")
+              obj (cat3 TMP "/" (cat3 base arch ".o"))
+              exe (cat3 TMP "/" (cat2 base arch))
+              ; x86-64 runs under Rosetta, as a Mach-O
+              (mut av) (list1 (if (= x 0) "--target=aarch64" "--target=x86_64"))]
+          (when (= x 1) (push! (mut av) "--macho"))
+          (push! (mut av) tir)
+          (push! (mut av) "-o")
+          (push! (mut av) obj)
+          (let [c (run-cmd OURS (argv-of av) 120)
+                (mut lv) (list1 "-arch")]
+            (push! (mut lv) arch)
+            (push! (mut lv) (cat2 "tests/tir/" nm))
+            (push! (mut lv) obj)
+            (push! (mut lv) "-o")
+            (push! (mut lv) exe)
+            (let [l (if (= (.code c) 0) (run-cmd "cc" (argv-of lv) 120) c)
+                  r (if (= (.code l) 0) (run-cmd exe (argv-of (new-list)) 60) l)]
+              (if (and (= (.code r) 0) (= (.out r) "ok\n"))
+                  (println "ok   {} ({})" base arch)
+                  (do (println "FAIL {} ({}): exit {}\n{}{}" base arch (.code r) (.out r) (.err r))
+                      (set! bad (+ bad 1)))))))))
     (if (= bad 0) 0 1)))
 
 ;;; tests/cir_test.coil builds CIR functions with the builder (Braun SSA) and

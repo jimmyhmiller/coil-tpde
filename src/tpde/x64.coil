@@ -250,6 +250,9 @@
 (const PROLOGUE-ALLOC 20)
 
 (defn prologue-begin! [(A IRAdaptor)] [(c (ptr (Compiler A)))] (-> void)
+  ; functions start 16-aligned, padded with NOPs (TPDE's begin_func)
+  (e/nop-n! (tx c) (- (cast i64 (align-up (off c) (: 16 u32))) (cast i64 (off c))))
+  (asm/sect-align-at-least! (.asm c) asm/SEC-TEXT 4)
   (set! (.func-start-off c) (off c))
   (set! (.frame-size c) (: 40 u32))
   (set! (.prologue-alloc c) (: 20 u32))
@@ -333,9 +336,7 @@
           (when (!= (& saved (bit r)) (: 0 u64)) (e/push! pp (b8 r)))))
       (let [adj (rsp-adjust c saved)]
         (when (> adj (: 0 u32))
-          ; always imm32, as TPDE (the reservation counts 7 bytes)
-          (e/rr! pp 0 true 0x81 (: 5 u8) (b8 RSP) false)
-          (e/e32! pp (cast i64 adj)))))
+          (e/alu-ri! pp e/ALU-SUB true (b8 RSP) (cast i64 adj)))))
     (let [pro-size (cast u32 (.len pro))]
       (for i (range 0 (.len pro))
         (buf/patch8! t (+ (cast i64 start) i) (load (buf/buf-at pp i))))

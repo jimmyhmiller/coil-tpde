@@ -285,6 +285,24 @@
 (defn int3! [(b (ptr Buf))] (-> void) (e8! b 0xCC))
 (defn nop! [(b (ptr Buf))] (-> void) (e8! b 0x90))
 
+;;; `n` bytes of the SDM's multi-byte NOPs (fadec's fe64_NOP).
+(defn nop-n! [(b (ptr Buf)) (n i64)] (-> void)
+  (let [(mut rem) n]
+    (while (> rem 9) (nop-k! b 9) (set! rem (- rem 9)))
+    (nop-k! b rem)))
+
+(defn nop-k! [(b (ptr Buf)) (k i64)] (-> void)
+  (cond (= k 1) (e8! b 0x90)
+        (= k 2) (do (e8! b 0x66) (e8! b 0x90))
+        (= k 3) (do (e8! b 0x0F) (e8! b 0x1F) (e8! b 0x00))
+        (= k 4) (do (e8! b 0x0F) (e8! b 0x1F) (e8! b 0x40) (e8! b 0))
+        (= k 5) (do (e8! b 0x0F) (e8! b 0x1F) (e8! b 0x44) (e8! b 0) (e8! b 0))
+        (= k 6) (do (e8! b 0x66) (e8! b 0x0F) (e8! b 0x1F) (e8! b 0x44) (e8! b 0) (e8! b 0))
+        (= k 7) (do (e8! b 0x0F) (e8! b 0x1F) (e8! b 0x80) (e32! b 0))
+        (= k 8) (do (e8! b 0x0F) (e8! b 0x1F) (e8! b 0x84) (e8! b 0) (e32! b 0))
+        (= k 9) (do (e8! b 0x66) (e8! b 0x0F) (e8! b 0x1F) (e8! b 0x84) (e8! b 0) (e32! b 0))
+        :else 0))
+
 ; ============================ SSE ============================================
 ; XMM operands are register numbers 0..15 (or the core's 32..47).
 
