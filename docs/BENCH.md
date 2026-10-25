@@ -26,15 +26,27 @@ All checks are Coil programs in `src/tools/`:
 | Coil examples | ✅ 45/45 `src/examples` print the same as LLVM -O0 (2 skipped: their LLVM build fails) | `tpde-bench examples` |
 | Coil stdlib suites | ✅ 171/171 (parsers 13, serde 41, system 38, text 34, threads 7, traits 38) | `coil test tests/stdlib/…_test.coil --backend tpde` |
 | C ABI | ✅ tpde, tpde program + LLVM lib, LLVM program + tpde lib | `scripts/tests/c-abi.py` |
-| Self-host | ✅ the compiler built by tpde builds itself with tpde; stage2 and stage3 are identical but for LC_UUID and the code signature; stage2 passes the corpus on the tpde and llvm lanes | see below |
+| Self-host | ✅ the full compiler (`src/compiler/main.coil`, with its LLVM backend) built by tpde passes `dev.py test fast`, 46/46 steps; the compiler built by tpde builds itself with tpde to a fixed point (stage2 and stage3 identical but for LC_UUID and the code signature) | see below |
 
 Self-host:
 
 ```
+coil-candidate build src/compiler/main.coil -o coil-selftpde-full --backend tpde \
+    --link-flag -L$LLVM/lib --link-flag -lLLVM --link-flag -lm
+scripts/dev.py ct-units --compiler build/bin/coil-selftpde-full
+scripts/dev.py test fast --compiler build/bin/coil-selftpde-full      # 46/46
+
 coil-candidate build src/compiler/main_a64.coil -o coil-selftpde --backend tpde
 coil-selftpde  build src/compiler/main_a64.coil -o coil-stage2 --backend tpde
 coil-stage2    build src/compiler/main_a64.coil -o coil-stage3 --backend tpde
 ```
+
+The ct-units step matters: without precompiled compile-time units a compiler
+counts macro expansions differently, and `diag/no-hang` checks the count (the
+LLVM-built compiler without its units fails the same way).
+
+`main_a64.coil` omits the LLVM backend, so the first full self-host found a
+miscompile the fixed point had not: see PLAN.md (tail calls in leaves).
 
 ## Compile time: backend vs LLVM -O0 (gate: ≥10×)
 

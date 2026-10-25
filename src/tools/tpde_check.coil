@@ -13,8 +13,8 @@
 ;;;       reported, not a failure: where we deviate from TPDE on purpose
 ;;;       (docs/PLAN.md) the code differs.
 ;;;   tpde-check enc
-;;;       Every instruction tests/enc_a64.coil encodes must disassemble with
-;;;       llvm-mc to the text written beside it.
+;;;       Every instruction tests/enc_a64.coil and tests/enc_x64.coil encode
+;;;       must disassemble with llvm-mc to the text written beside it.
 ;;;   tpde-check exec
 ;;;       Every tests/tir/NAME.tir with a NAME.c driver, compiled, linked and
 ;;;       run; and tests/cir_test.coil (the CIR builder) with tests/cir_test.c.
@@ -518,16 +518,26 @@
 ; ============================ encoder ========================================
 
 (defn enc [] (-> i64)
-  (let [(mut bv) (list1 "build")
-        _ (do (push! (mut bv) "tests/enc_a64.coil") (push! (mut bv) "-o") (push! (mut bv) "build/enc_a64")
+  (let [(mut t1) (list1 "-triple=aarch64")
+        (mut t2) (list1 "-triple=x86_64")]
+    (push! (mut t1) "-mattr=+lse")
+    (push! (mut t2) "-output-asm-variant=1")
+    (+ (enc-one "a64" t1) (enc-one "x64" t2))))
+
+;;; Build and run tests/enc_NAME.coil, then disassemble its bytes with llvm-mc.
+(defn enc-one [(name (slice u8)) (flags (ArrayList (slice u8)))] (-> i64)
+  (let [src (cat3 "tests/enc_" name ".coil")
+        exe (cat2 "build/enc_" name)
+        (mut bv) (list1 "build")
+        _ (do (push! (mut bv) src) (push! (mut bv) "-o") (push! (mut bv) exe)
               (push! (mut bv) "--quiet") 0)
         b (run-cmd "coil" (argv-of bv) 600)
-        r (if (= (.code b) 0) (run-cmd "build/enc_a64" (argv-of (new-list)) 60) b)
+        r (if (= (.code b) 0) (run-cmd exe (argv-of (new-list)) 60) b)
         ls (lines (.out r))
         (mut input) (StrBuf::new (malloc-allocator))
         (mut want) (new-list)]
     (if (!= (.code r) 0)
-        (do (eprintln "enc: building or running tests/enc_a64.coil failed\n{}" (.err r)) 1)
+        (do (eprintln "enc: building or running {} failed\n{}" src (.err r)) 1)
         (do
           (for i (range 0 (len ls))
             (let [l (get ls i)
@@ -537,27 +547,35 @@
                 (push-str! (mut input) (subslice l 0 k))
                 (push-str! (mut input) "\n")
                 (push! (mut want) (strip-comment (subslice l (+ k 2) (len l)))))))
-          (let [bytes (cat2 TMP "/enc.txt")]
+          (let [bytes (cat3 TMP "/enc-" (cat2 name ".txt"))]
             (write-text bytes (finish! (mut input)))
             (let [(mut av) (list1 "--disassemble")]
-              (push! (mut av) "-triple=aarch64")
-              (push! (mut av) "-mattr=+lse")
+              (for i (range 0 (len flags)) (push! (mut av) (get flags i)))
               (push! (mut av) bytes)
               (let [m (run-cmd LLVM-MC (argv-of av) 60)
                     out (lines (.out m))
                     (mut got) (new-list)
                     (mut bad) 0]
-                (for i (range 0 (len out))
-                  (let [ws (words (get out i))]
-                    (unless (or (= (len ws) 0) (= (get ws 0) ".text"))
-                      (push! (mut got) (canon-asm (strip-comment (get out i)))))))
+                (let [(mut pending) ""]
+                  (for i (range 0 (len out))
+                    (let [ws (words (get out i))]
+                      (unless (or (= (len ws) 0) (= (get ws 0) ".text") (starts-with? (get ws 0) ".intel_syntax"))
+                        (let [text (canon-asm (strip-comment (get out i)))]
+                          ; x86 prefixes come out on a line of their own
+                          (if (= text "lock")
+                              (set! pending "lock ")
+                              (do (push! (mut got) (cat2 pending text)) (set! pending ""))))))))
                 (if (!= (len got) (len want))
-                    (do (println "enc: llvm-mc gave {} instructions for {}:\n{}" (len got) (len want) (.err m)) 1)
+                    (do (println "enc {}: llvm-mc gave {} instructions for {}:\n{}" name (len got) (len want) (.err m))
+                        (for i (range 0 (if (< (len got) (len want)) (len got) (len want)))
+                          (unless (= (get got i) (get want i))
+                            (println "  first difference: want [{}] got [{}]" (get want i) (get got i))))
+                        1)
                     (do (for i (range 0 (len want))
                           (unless (= (get got i) (get want i))
-                            (println "MISMATCH: want [{}] got [{}]" (get want i) (get got i))
+                            (println "MISMATCH {}: want [{}] got [{}]" name (get want i) (get got i))
                             (set! bad (+ bad 1))))
-                        (println "encoder: {} checked, {} mismatched" (len want) bad)
+                        (println "encoder {}: {} checked, {} mismatched" name (len want) bad)
                         (if (= bad 0) 0 1))))))))))
 
 ;;; llvm-mc's `\tadd\tx0, x1` as `add x0, x1`.
