@@ -226,6 +226,17 @@
   (set! (.undef-i64 f) (none)))
 
 (defn val [(f (ptr Func)) (v u32)] (-> (ptr Value)) (elem (mut (.values f)) (i64-of v)))
+
+; ---- frame escapes ----
+; Value.flags bit 2: the value is the address of (or into) this frame. If one
+; reaches a call argument, a stored value, a return or a variable, the frame
+; escapes, and pointer-argument tail calls are demoted (LLVM's musttail rule).
+(defn frame-derived? [(f (ptr Func)) (v u32)] (-> bool)
+  (!= (& (.flags (val f v)) (: 4 u8)) (: 0 u8)))
+(defn mark-frame-derived! [(f (ptr Func)) (v u32)] (-> void)
+  (set! (.flags (val f v)) (| (.flags (val f v)) (: 4 u8))))
+(defn note-escape! [(f (ptr Func)) (v u32)] (-> void)
+  (when (frame-derived? f v) (set! (.frame-escapes f) true)))
 (defn blk [(f (ptr Func)) (b u32)] (-> (ptr Block)) (elem (mut (.blocks f)) (i64-of b)))
 (defn value-count [(f (ptr Func))] (-> u32) (u32-of (len (.values f))))
 (defn block-count [(f (ptr Func))] (-> u32) (u32-of (len (.blocks f))))
@@ -267,6 +278,7 @@
 (defn alloca! [(f (ptr Func)) (size i64) (align i64)] (-> u32)
   (let [v (push-value! f OP-ALLOCA T-I64 (if (< size 1) 1 size) (if (< align 1) 1 align))]
     (push! (mut (.allocas f)) v)
+    (mark-frame-derived! f v)
     v))
 
 ; ---- blocks ----
@@ -316,6 +328,9 @@
   (let [v (inst! f op ty imm imm2)]
     (push-operand! f a (: 0 u32))
     (set-ops! f v (: 1 u32) (: 1 u32))
+    (when (or (= op OP-DYNALLOCA)
+              (and (or (= op OP-ADDI) (= op OP-COPY)) (frame-derived? f a)))
+      (mark-frame-derived! f v))
     v))
 
 (defn op2! [(f (ptr Func)) (op i64) (ty i64) (a u32) (b u32) (imm i64) (imm2 i64)] (-> u32)
@@ -323,6 +338,12 @@
     (push-operand! f a (: 0 u32))
     (push-operand! f b (: 0 u32))
     (set-ops! f v (: 2 u32) (: 2 u32))
+    (cond (and (or (= op OP-PTRADD) (= op OP-ADD) (= op OP-SUB) (= op OP-OR) (= op OP-AND)) (or (frame-derived? f a) (frame-derived? f b)))
+            (mark-frame-derived! f v)
+          ; a stored pointer to this frame escapes
+          (= op OP-STORE) (note-escape! f b)
+          (or (= op OP-ATOMIC-STORE) (= op OP-ATOMIC-RMW)) (note-escape! f b)
+          :else 0)
     v))
 
 (defn op3! [(f (ptr Func)) (op i64) (ty i64) (a u32) (b u32) (c u32) (imm i64) (imm2 i64)] (-> u32)
@@ -331,6 +352,9 @@
     (push-operand! f b (: 0 u32))
     (push-operand! f c (: 0 u32))
     (set-ops! f v (: 3 u32) (: 3 u32))
+    (when (and (= op OP-SELECT) (or (frame-derived? f b) (frame-derived? f c)))
+      (mark-frame-derived! f v))
+    (when (= op OP-CMPXCHG) (note-escape! f c))
     v))
 
 (defn load-mem! [(f (ptr Func)) (ty i64) (p u32) (off i64) (bytes i64) (signed bool)] (-> u32)
@@ -387,7 +411,7 @@
   (let [b (.cur f)
         n (len (load vals))
         v (inst! f OP-RET T-VOID 0 0)]
-    (for i (range 0 n) (push-operand! f (get (load vals) i) (: 0 u32)))
+    (for i (range 0 n) (note-escape! f (get (load vals) i)) (push-operand! f (get (load vals) i) (: 0 u32)))
     (set-ops! f v (u32-of n) (u32-of n))
     (set! (.term (blk f b)) v)))
 
@@ -397,6 +421,7 @@
     (set! (.term (blk f b)) v)))
 
 (defn ret1! [(f (ptr Func)) (x u32)] (-> void)
+  (note-escape! f x)
   (let [b (.cur f)
         v (inst! f OP-RET T-VOID 0 0)]
     (push-operand! f x (: 0 u32))
@@ -421,7 +446,9 @@
         v (inst! f (if tail OP-TAILCALL OP-CALL) rty (if (= target (none)) -1 (i64-of target)) 0)
         n (len (load args))]
     (when (!= callee (none)) (push-operand! f callee (: 0 u32)))
-    (for i (range 0 n) (push-operand! f (get (load args) i) (get (load flags) i)))
+    (for i (range 0 n)
+      (note-escape! f (get (load args) i))
+      (push-operand! f (get (load args) i) (get (load flags) i)))
     (let [nops (+ (u32-of n) (if (= callee (none)) (: 0 u32) (: 1 u32)))]
       (set-ops! f v nops nops))
     (set! (.aux (val f v)) (cast u8 nr))
@@ -437,7 +464,9 @@
   (set! (.has-calls f) true)
   (let [v (inst! f OP-SHIMCALL rty (if (= target (none)) -1 (i64-of target)) (cast i64 clobber))
         n (len (load args))]
-    (for i (range 0 n) (push-operand! f (get (load args) i) (get (load regs) i)))
+    (for i (range 0 n)
+      (note-escape! f (get (load args) i))
+      (push-operand! f (get (load args) i) (get (load regs) i)))
     (set-ops! f v (u32-of n) (u32-of n))
     (let [x (val f v)]
       (set! (.aux x) (cast u8 ret-reg))
@@ -470,6 +499,7 @@
     (set! (.value ld) v)))
 
 (defn def-var! [(f (ptr Func)) (var u32) (v u32)] (-> void)
+  (note-escape! f v)
   (write-var! f var (.cur f) v))
 
 (defn lookup-def [(f (ptr Func)) (var u32) (block u32)] (-> u32)
