@@ -995,6 +995,7 @@
       (set! (.int-ext cca) (cast u8 (& flags (: 0x7F u32)))))
     (set! (.consecutive cca) (cast u8 (& (>> flags (: 16 u32)) (: 0xFF u32))))
     (set! (.sret cca) (!= (& flags (: 0x100 u32)) (: 0 u32)))
+    (set! (.abi-size cca) (core/arg-flags-size flags))
     cca))
 
 ;;; Move the call's arguments into place; returns the argument registers.

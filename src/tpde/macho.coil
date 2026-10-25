@@ -78,7 +78,7 @@
 (defn write-object! [(a (ptr Asm)) (out (ptr Buf))] (-> void)
   (let [al (malloc-allocator)
         nsect (len (.sects a))
-        nsym (len (.syms a))
+        nsym (cast i64 (asm/sym-count a))
         nrel (len (.relocs a))
         (mut order) (ArrayList::new [i64] al)
         (mut perm) (ArrayList::new [i64] al)

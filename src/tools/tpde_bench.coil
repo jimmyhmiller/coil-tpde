@@ -1,0 +1,317 @@
+;;; tpde-bench: the acceptance checks for Coil's tpde backend (docs/PLAN.md,
+;;; "Gates"), run against a Coil compiler binary.
+;;;
+;;;   tpde-bench compile-time COIL FILE [RUNS]
+;;;       Builds FILE with `--backend tpde` and with `-O0` (LLVM) RUNS times
+;;;       each (default 5) and compares the medians of the backend spans that
+;;;       `--timings` reports. Fails unless tpde is at least 10x faster.
+;;;   tpde-bench examples COIL DIR
+;;;       Builds every DIR/*.coil both ways, runs both, and fails if any differ
+;;;       in output or exit status. A program the LLVM build rejects is skipped.
+;;;   tpde-bench runtime COIL DIR [RUNS]
+;;;       Builds every DIR/*.coil both ways and reports the median run time of
+;;;       each (default 5 runs).
+;;;
+;;; Builds go to /tmp/tpde-bench.
+(module tpde.tools.tpde-bench)
+(import "coil.alloc" :use [malloc-allocator])
+(import "coil.args" :as args)
+(import "coil.fs" :as fs)
+(import "coil.str" :use [StrBuf parse-int])
+(import "coil.slice" :use [subslice])
+(import "coil.arraylist" :use [ArrayList])
+(import "coil.subprocess" :as sp)
+(import "coil.time" :as time)
+(import "coil.cancellation" :as cancellation)
+(import "coil.primitive" :as primitive)
+
+(const OUT-DIR "/tmp/tpde-bench")
+
+; ---- strings ----
+
+(defn cat2 [(x (slice u8)) (y (slice u8))] (-> (slice u8))
+  (let [(mut b) (StrBuf::new (malloc-allocator))]
+    (push-str! (mut b) x)
+    (push-str! (mut b) y)
+    (finish! (mut b))))
+
+(defn cat3 [(x (slice u8)) (y (slice u8)) (z (slice u8))] (-> (slice u8)) (cat2 (cat2 x y) z))
+
+(defn ends-with? [(s (slice u8)) (suffix (slice u8))] (-> bool)
+  (and (>= (len s) (len suffix)) (= (subslice s (- (len s) (len suffix)) (len s)) suffix)))
+
+(defn space? [(c u8)] (-> bool) (or (= c #\space) (= c #\tab) (= c (: 13 u8))))
+
+;;; The whitespace-separated words of `line`.
+(defn words [(line (slice u8))] (-> (ArrayList (slice u8)))
+  (let [(mut out) (ArrayList::new [(slice u8)] (malloc-allocator))
+        n (len line)
+        (mut i) 0]
+    (while (< i n)
+      (while (and (< i n) (space? (get line i))) (set! i (+ i 1)))
+      (let [start i]
+        (while (and (< i n) (not (space? (get line i)))) (set! i (+ i 1)))
+        (when (> i start) (push! (mut out) (subslice line start i)))))
+    out))
+
+;;; The lines of `text`.
+(defn lines [(text (slice u8))] (-> (ArrayList (slice u8)))
+  (let [(mut out) (ArrayList::new [(slice u8)] (malloc-allocator))
+        n (len text)
+        (mut start) 0]
+    (for i (range 0 n)
+      (when (= (get text i) #\newline)
+        (push! (mut out) (subslice text start i))
+        (set! start (+ i 1))))
+    (when (< start n) (push! (mut out) (subslice text start n)))
+    out))
+
+; ---- processes ----
+
+(defstruct Ran
+  [(started bool)
+   (code i64)      ; exit status, or 128 + signal
+   (timed-out bool)
+   (out (slice u8))
+   (err (slice u8))
+   (us i64)])      ; wall time in microseconds
+
+(defn now-us [] (-> i64)
+  (match (time/monotonic-now)
+    (Ok [t] (+ (* (.sec t) 1000000) (/ (.nsec t) 1000)))
+    (Err [_] 0)))
+
+;;; Run `prog` with `argv` (not including argv[0]) for at most `timeout-s`
+;;; seconds, capturing its output.
+(defn run-cmd [(prog (slice u8)) (argv (slice (slice u8))) (timeout-s i64)] (-> Ran)
+  (run-in "" prog argv timeout-s))
+
+;;; `run-cmd` in directory `cwd` ("" for this one).
+(defn run-in [(cwd (slice u8)) (prog (slice u8)) (argv (slice (slice u8))) (timeout-s i64)] (-> Ran)
+  (let [a (malloc-allocator)
+        deadline (match (time/Duration::seconds timeout-s)
+                   (Ok [d] (match (time/Instant::from-now d) (Ok [i] (Some i)) (Err [_] (None [time/Instant]))))
+                   (Err [_] (None [time/Instant])))
+        grace (match (time/Duration::millis 200) (Ok [d] d) (Err [_] (time/Duration :sec 0 :nsec 0)))
+        opts (sp/RunOptions::new prog argv cwd 268435456 268435456 deadline
+                                 (primitive/cast (ptr cancellation/Cancellation) 0) grace)
+        (mut res) (primitive/zeroed sp/RunResult)
+        t0 (now-us)]
+    (match (sp/run a (mut res) opts)
+      (Ok [_]
+          (Ran :started true
+               :code (match (.status res) (sp/Exited [c] c) (sp/Signaled [s] (+ 128 s)))
+               :timed-out (.timed-out res)
+               :out (.stdout res) :err (.stderr res) :us (- (now-us) t0)))
+      (Err [_] (Ran :started false :code -1 :timed-out false :out "" :err "" :us 0)))))
+
+(defn argv-of [(xs (ArrayList (slice u8)))] (-> (slice (slice u8))) (slice xs))
+
+(defn list1 [(x (slice u8))] (-> (ArrayList (slice u8)))
+  (let [(mut l) (ArrayList::new [(slice u8)] (malloc-allocator))] (push! (mut l) x) l))
+
+;;; `coil build SRC -o OUT FLAGS...`
+(defn build [(coil (slice u8)) (src (slice u8)) (out (slice u8)) (flags (slice (slice u8)))] (-> Ran)
+  (let [(mut av) (list1 "build")]
+    (push! (mut av) src)
+    (push! (mut av) "-o")
+    (push! (mut av) out)
+    (for i (range 0 (len flags)) (push! (mut av) (get flags i)))
+    (run-cmd coil (argv-of av) 600)))
+
+(defn tpde-flags [] (-> (ArrayList (slice u8)))
+  (let [(mut l) (list1 "--backend")] (push! (mut l) "tpde") l))
+
+(defn llvm-flags [] (-> (ArrayList (slice u8))) (list1 "-O0"))
+
+(defn with-timings [(flags (ArrayList (slice u8)))] (-> (ArrayList (slice u8)))
+  (let [(mut l) flags] (push! (mut l) "--timings") l))
+
+; ---- statistics ----
+
+(defn median [(xs (mut (ArrayList i64)))] (-> i64)
+  (let [n (len xs)]
+    (for i (range 1 n)
+      (let [x (get xs i)
+            (mut j) i]
+        (while (and (> j 0) (> (get xs (- j 1)) x))
+          (set! (mut xs) j (get xs (- j 1)))
+          (set! j (- j 1)))
+        (set! (mut xs) j x)))
+    (if (= n 0) 0 (get xs (/ n 2)))))
+
+;;; Tenths: 123 is 12.3.
+(defn ratio10 [(num i64) (den i64)] (-> i64) (if (= den 0) 0 (/ (* num 10) den)))
+
+(defn show10 [(x i64)] (-> (slice u8))
+  (let [(mut b) (StrBuf::new (malloc-allocator))]
+    (push-i64! (mut b) (/ x 10))
+    (push-str! (mut b) ".")
+    (push-i64! (mut b) (% x 10))
+    (finish! (mut b))))
+
+;;; The sum of the `--timings` spans named in `names`, in milliseconds; -1 if
+;;; none of them was reported.
+(defn span-ms [(report (slice u8)) (names (slice (slice u8)))] (-> i64)
+  (let [ls (lines report)
+        (mut total) 0
+        (mut seen) false]
+    (for i (range 0 (len ls))
+      (let [ws (words (get ls i))]
+        (when (>= (len ws) 4)
+          (let [name (get ws (- (len ws) 1))]
+            (for k (range 0 (len names))
+              (when (= name (get names k))
+                (match (parse-int (get ws 0))
+                  (Some [ms] (do (set! total (+ total ms)) (set! seen true)))
+                  (None [] 0))))))))
+    (if seen total -1)))
+
+; ---- compile-time ----
+
+(defn compile-time [(coil (slice u8)) (file (slice u8)) (runs i64)] (-> i64)
+  (let [(mut tp) (ArrayList::new [i64] (malloc-allocator))
+        (mut ll) (ArrayList::new [i64] (malloc-allocator))
+        (mut tpn) (list1 "backend.tpde-object")
+        (mut lln) (list1 "backend.llvm-lower")
+        (mut bad) false]
+    (push! (mut lln) "backend.llvm-optimize")
+    (push! (mut lln) "backend.object-emit")
+    (for r (range 0 runs)
+      (let [t (build coil file (cat2 OUT-DIR "/ct-tpde") (argv-of (with-timings (tpde-flags))))
+            l (build coil file (cat2 OUT-DIR "/ct-llvm") (argv-of (with-timings (llvm-flags))))
+            tms (span-ms (.err t) (argv-of tpn))
+            lms (span-ms (.err l) (argv-of lln))]
+        (if (or (!= (.code t) 0) (!= (.code l) 0) (< tms 0) (< lms 0))
+            (do (eprintln "compile-time: a build failed (tpde exit {}, llvm exit {})" (.code t) (.code l))
+                (eprintln "{}" (.err t))
+                (set! bad true))
+            (do (println "run {}: tpde {} ms, llvm -O0 {} ms" (+ r 1) tms lms)
+                (push! (mut tp) tms)
+                (push! (mut ll) lms)))))
+    (if bad
+        1
+        (let [mt (median (mut tp))
+              ml (median (mut ll))
+              x (ratio10 ml mt)]
+          (println "median backend time: tpde {} ms, llvm -O0 {} ms: {}x faster" mt ml (show10 x))
+          (if (>= x 100)
+              (do (println "PASS: at least 10x") 0)
+              (do (println "FAIL: below 10x") 1))))))
+
+; ---- examples ----
+
+(defn coil-files [(dir (slice u8))] (-> (ArrayList (slice u8)))
+  (let [(mut out) (ArrayList::new [(slice u8)] (malloc-allocator))]
+    (match (fs/Directory::list (malloc-allocator) dir)
+      (Ok [names]
+          (for i (range 0 (len names))
+            (let [nm (get names i)]
+              (when (ends-with? nm ".coil") (push! (mut out) nm))))
+          0)
+      (Err [_] (eprintln "cannot list {}" dir) 0))
+    ; directory order is arbitrary; sort for a stable report
+    (let [n (len out)]
+      (for i (range 1 n)
+        (let [x (get out i)
+              (mut j) i]
+          (while (and (> j 0) (> (get out (- j 1)) x))
+            (set! (mut out) j (get out (- j 1)))
+            (set! j (- j 1)))
+          (set! (mut out) j x))))
+    out))
+
+(defn stem [(name (slice u8))] (-> (slice u8)) (subslice name 0 (- (len name) 5)))
+
+(defn examples [(coil (slice u8)) (dir (slice u8))] (-> i64)
+  (let [files (coil-files dir)
+        (mut pass) 0
+        (mut fail) 0
+        (mut skip) 0
+        none (ArrayList::new [(slice u8)] (malloc-allocator))]
+    (for i (range 0 (len files))
+      (let [nm (get files i)
+            src (cat3 dir "/" nm)
+            ; the same name in two directories: a program may print its argv[0]
+            ldir (cat2 OUT-DIR "/llvm")
+            tdir (cat2 OUT-DIR "/tpde")
+            exe (cat2 "./" (stem nm))
+            lbin (cat3 ldir "/" (stem nm))
+            tbin (cat3 tdir "/" (stem nm))
+            lb (build coil src lbin (argv-of (llvm-flags)))]
+        (if (!= (.code lb) 0)
+            (do (println "skip {} (the LLVM build fails)" nm) (set! skip (+ skip 1)))
+            (let [tb (build coil src tbin (argv-of (tpde-flags)))]
+              (if (!= (.code tb) 0)
+                  (do (println "FAIL {}: the tpde build fails" nm)
+                      (eprintln "{}" (.err tb))
+                      (set! fail (+ fail 1)))
+                  (let [lr (run-in ldir exe (slice none) 60)
+                        tr (run-in tdir exe (slice none) 60)]
+                    (cond
+                      (.timed-out lr) (do (println "skip {} (the LLVM build times out)" nm) (set! skip (+ skip 1)))
+                      (.timed-out tr) (do (println "FAIL {}: the tpde build times out" nm) (set! fail (+ fail 1)))
+                      (!= (.code lr) (.code tr))
+                        (do (println "FAIL {}: exit {} with llvm, {} with tpde" nm (.code lr) (.code tr))
+                            (set! fail (+ fail 1)))
+                      (!= (.out lr) (.out tr))
+                        (do (println "FAIL {}: the output differs" nm) (set! fail (+ fail 1)))
+                      :else (set! pass (+ pass 1)))))))))
+    (println "examples: {} pass, {} fail, {} skipped" pass fail skip)
+    (if (= fail 0) 0 1)))
+
+; ---- runtime ----
+
+(defn runtime [(coil (slice u8)) (dir (slice u8)) (runs i64)] (-> i64)
+  (let [files (coil-files dir)
+        none (ArrayList::new [(slice u8)] (malloc-allocator))]
+    (println "{} runs each; median wall time" runs)
+    (for i (range 0 (len files))
+      (let [nm (get files i)
+            src (cat3 dir "/" nm)
+            lbin (cat3 OUT-DIR "/" (cat2 (stem nm) "-rt-llvm"))
+            tbin (cat3 OUT-DIR "/" (cat2 (stem nm) "-rt-tpde"))
+            lb (build coil src lbin (argv-of (llvm-flags)))
+            tb (build coil src tbin (argv-of (tpde-flags)))]
+        (if (or (!= (.code lb) 0) (!= (.code tb) 0))
+            (println "{}: build failed (llvm exit {}, tpde exit {})" nm (.code lb) (.code tb))
+            (let [(mut lt) (ArrayList::new [i64] (malloc-allocator))
+                  (mut tt) (ArrayList::new [i64] (malloc-allocator))
+                  (mut lcode) 0
+                  (mut tcode) 0]
+              (for _ (range 0 runs)
+                (let [l (run-cmd lbin (slice none) 300)
+                      t (run-cmd tbin (slice none) 300)]
+                  (set! lcode (.code l))
+                  (set! tcode (.code t))
+                  (push! (mut lt) (/ (.us l) 1000))
+                  (push! (mut tt) (/ (.us t) 1000))))
+              (let [ml (median (mut lt))
+                    mt (median (mut tt))]
+                (println "{}: llvm -O0 {} ms (exit {}), tpde {} ms (exit {}), tpde/llvm {}"
+                         nm ml lcode mt tcode (show10 (ratio10 mt ml))))))))
+    0))
+
+(defn usage [] (-> i64)
+  (eprintln "usage: tpde-bench compile-time COIL FILE [RUNS]")
+  (eprintln "       tpde-bench examples COIL DIR")
+  (eprintln "       tpde-bench runtime COIL DIR [RUNS]")
+  2)
+
+(defn arg-int [(i i64) (default i64)] (-> i64)
+  (if (< i (args/count)) (match (parse-int (args/nth i)) (Some [v] v) (None [] default)) default))
+
+(defn main [(argc i32) (argv (ptr (ptr i8)))] (-> i64)
+  (args/init! argc argv)
+  (fs/create-dir (malloc-allocator) OUT-DIR 493)
+  (fs/create-dir (malloc-allocator) (cat2 OUT-DIR "/llvm") 493)
+  (fs/create-dir (malloc-allocator) (cat2 OUT-DIR "/tpde") 493)
+  (if (< (args/count) 4)
+      (usage)
+      (let [cmd (args/nth 1)
+            coil (args/nth 2)
+            what (args/nth 3)]
+        (cond (= cmd "compile-time") (compile-time coil what (arg-int 4 5))
+              (= cmd "examples") (examples coil what)
+              (= cmd "runtime") (runtime coil what (arg-int 4 5))
+              :else (usage)))))

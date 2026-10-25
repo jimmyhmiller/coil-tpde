@@ -111,6 +111,11 @@
 (const AF-SRET 0x100)
 (const AF-VARIADIC 0x200)
 (const AF-ZEXT 0x400)
+;; bits 24..26: log2 of an integer argument's C size plus one (Apple lays
+;; stack arguments out at that size); 0 for the part's own size
+(defn af-size [(bytes i64)] (-> u32)
+  (cond (= bytes 1) (: 0x1000000 u32) (= bytes 2) (: 0x2000000 u32)
+        (= bytes 4) (: 0x3000000 u32) :else (: 0 u32)))
 ; bits 16..23: how many following arguments must stay in consecutive registers
 
 (defstruct Value
@@ -148,6 +153,10 @@
 (defstruct IncompletePhi [(block u32) (var u32) (phi u32)])
 
 (defstruct VarDef [(block u32) (value u32)])
+;;; A slot of the (variable, block) -> definition table. A slot is live only
+;;; when its `gen` is the function's: starting a function bumps the generation
+;;; instead of zeroing the table, which only ever grows to the largest function.
+(defstruct DefSlot [(key u64) (value u32) (gen u32)])
 
 (defstruct Func
   [(name (slice u8))
@@ -173,9 +182,17 @@
    ; ---- SSA construction
    (var-types (ArrayList u8))
    (last-def (ArrayList VarDef))
-   (defs (HashMap u64 u32))
+   (def-slots (ArrayList DefSlot))
+   (def-gen u32)
+   (def-count i64)
    (incomplete (ArrayList IncompletePhi))
-   (undef-i64 u32)])
+   (undef-i64 u32)
+   ; i64 constants -16..47 already made in this function (constants are
+   ; materialized at each use, so one value serves every use)
+   (small-consts (ArrayList u32))
+   ; drop-dead!'s use counts and spare instruction list
+   (scratch-uses (ArrayList u32))
+   (scratch-insts (ArrayList u32))])
 
 (defn none [] (-> u32) (: 0xFFFFFFFF u32))
 (defn i64-of [(x u32)] (-> i64) (cast i64 x))
@@ -194,9 +211,13 @@
             :fwd (ArrayList::new [u32] a) :bytes (ArrayList::new [u8] a)
             :cur (none) :has-calls false :has-dynamic-alloca false :frame-escapes false
             :var-types (ArrayList::new [u8] a) :last-def (ArrayList::new [VarDef] a)
-            :defs (HashMap::new-scalar [u64 u32] a)
+            :def-slots (ArrayList::new [DefSlot] a) :def-gen (: 1 u32) :def-count 0
             :incomplete (ArrayList::new [IncompletePhi] a)
-            :undef-i64 (none)))))
+            :undef-i64 (none)
+            :small-consts (let [(mut xs) (ArrayList::new [u32] a)]
+                            (for _ (range 0 64) (push! (mut xs) (none)))
+                            xs)
+            :scratch-uses (ArrayList::new [u32] a) :scratch-insts (ArrayList::new [u32] a)))))
 
 ;;; Start a new function (keeps the storage).
 (defn reset! [(f (ptr Func)) (name (slice u8))] (-> void)
@@ -217,13 +238,14 @@
   (clear! (mut (.bytes f)))
   (clear! (mut (.var-types f)))
   (clear! (mut (.last-def f)))
-  (clear! (mut (.defs f)))
+  (defs-reset! f)
   (clear! (mut (.incomplete f)))
   (set! (.cur f) (none))
   (set! (.has-calls f) false)
   (set! (.has-dynamic-alloca f) false)
   (set! (.frame-escapes f) false)
-  (set! (.undef-i64 f) (none)))
+  (set! (.undef-i64 f) (none))
+  (for i (range 0 64) (set! (mut (.small-consts f)) i (none))))
 
 (defn val [(f (ptr Func)) (v u32)] (-> (ptr Value)) (elem (mut (.values f)) (i64-of v)))
 
@@ -260,7 +282,15 @@
 
 (defn const! [(f (ptr Func)) (ty i64) (lo u64) (hi u64)] (-> u32)
   (push-value! f OP-CONST ty (cast i64 lo) (cast i64 hi)))
-(defn iconst! [(f (ptr Func)) (v i64)] (-> u32) (push-value! f OP-CONST T-I64 v 0))
+(defn iconst! [(f (ptr Func)) (v i64)] (-> u32)
+  (if (and (>= v -16) (< v 48))
+      (let [have (get (.small-consts f) (+ v 16))]
+        (if (!= have (none))
+            have
+            (let [c (push-value! f OP-CONST T-I64 v 0)]
+              (set! (mut (.small-consts f)) (+ v 16) c)
+              c)))
+      (push-value! f OP-CONST T-I64 v 0)))
 (defn sym! [(f (ptr Func)) (sym u32) (addend i64)] (-> u32) (push-value! f OP-SYM T-I64 (i64-of sym) addend))
 
 (defn arg! [(f (ptr Func)) (ty i64) (sret bool)] (-> u32)
@@ -325,6 +355,17 @@
   (inst! f op ty imm imm2))
 
 (defn op1! [(f (ptr Func)) (op i64) (ty i64) (a u32) (imm i64) (imm2 i64)] (-> u32)
+  (let [x (val f a)]
+    ; an i64 constant extended within i64 is a constant
+    (if (and (or (= op OP-SEXT) (= op OP-ZEXT)) (= ty T-I64)
+             (= (cast i64 (.op x)) OP-CONST) (= (cast i64 (.ty x)) T-I64) (> imm 0) (< imm 64))
+        (let [sh (- 64 imm)
+              c (if (= op OP-SEXT) (>> (<< (.imm x) sh) sh)
+                    (cast i64 (>> (<< (cast u64 (.imm x)) (cast u64 sh)) (cast u64 sh))))]
+          (iconst! f c))
+        (op1-inst! f op ty a imm imm2))))
+
+(defn op1-inst! [(f (ptr Func)) (op i64) (ty i64) (a u32) (imm i64) (imm2 i64)] (-> u32)
   (let [v (inst! f op ty imm imm2)]
     (push-operand! f a (: 0 u32))
     (set-ops! f v (: 1 u32) (: 1 u32))
@@ -357,11 +398,27 @@
     (when (= op OP-CMPXCHG) (note-escape! f c))
     v))
 
+;;; The base of address `p` once the constant offsets of ADDIs are folded into
+;;; the access's own (`addr-off` gives the total): `ldr x, [base, #off]`
+;;; instead of an add before every field access. An ADDI left without uses is
+;;; dropped by `finish!`.
+(defn addr-base [(f (ptr Func)) (p u32)] (-> u32)
+  (let [(mut b) p]
+    (while (= (cast i64 (.op (val f b))) OP-ADDI) (set! b (operand f (val f b) (: 0 u32))))
+    b))
+
+(defn addr-off [(f (ptr Func)) (p u32) (off i64)] (-> i64)
+  (let [(mut b) p (mut o) off]
+    (while (= (cast i64 (.op (val f b))) OP-ADDI)
+      (set! o (+ o (.imm (val f b))))
+      (set! b (operand f (val f b) (: 0 u32))))
+    o))
+
 (defn load-mem! [(f (ptr Func)) (ty i64) (p u32) (off i64) (bytes i64) (signed bool)] (-> u32)
-  (op1! f OP-LOAD ty p off (| bytes (if signed 256 0))))
+  (op1! f OP-LOAD ty (addr-base f p) (addr-off f p off) (| bytes (if signed 256 0))))
 
 (defn store-mem! [(f (ptr Func)) (p u32) (v u32) (off i64) (bytes i64)] (-> u32)
-  (op2! f OP-STORE T-VOID p v off bytes))
+  (op2! f OP-STORE T-VOID (addr-base f p) v (addr-off f p off) bytes))
 
 (defn addi! [(f (ptr Func)) (p u32) (off i64)] (-> u32)
   (if (= off 0) p (op1! f OP-ADDI T-I64 p off 0)))
@@ -440,7 +497,10 @@
 ;;; returns the call (its first result).
 (defn call! [(f (ptr Func)) (target u32) (callee u32) (args (ptr (ArrayList u32))) (flags (ptr (ArrayList u32)))
              (rtypes (ptr (ArrayList u8))) (tail bool)] (-> u32)
-  (set! (.has-calls f) true)
+  ; nothing is live across a tail call, so it does not make the function a
+  ; non-leaf (which would put its values in callee-saved registers); one that
+  ; compiles as an ordinary call evicts what it clobbers like any call
+  (unless tail (set! (.has-calls f) true))
   (let [nr (len (load rtypes))
         rty (if (> nr 0) (cast i64 (get (load rtypes) 0)) T-VOID)
         v (inst! f (if tail OP-TAILCALL OP-CALL) rty (if (= target (none)) -1 (i64-of target)) 0)
@@ -490,11 +550,66 @@
 
 (defn def-key [(var u32) (block u32)] (-> u64) (| (<< (cast u64 var) (: 32 u64)) (cast u64 block)))
 
+;; ---- the definition table (open addressing, linear probing) ----
+
+(defn defs-reset! [(f (ptr Func))] (-> void)
+  (set! (.def-count f) 0)
+  (set! (.def-gen f) (+ (.def-gen f) (: 1 u32)))
+  (when (= (.def-gen f) (: 0 u32))
+    ; the generation wrapped: stale slots could look live again
+    (for i (range 0 (len (.def-slots f))) (set! (.gen (elem (mut (.def-slots f)) i)) (: 0 u32)))
+    (set! (.def-gen f) (: 1 u32))))
+
+(defn defs-home [(f (ptr Func)) (k u64)] (-> i64)
+  (let [h (* k (: 0x9E3779B97F4A7C15 u64))]
+    (& (cast i64 (>> h (: 32 u64))) (- (len (.def-slots f)) 1))))
+
+(defn defs-put! [(f (ptr Func)) (k u64) (v u32)] (-> void)
+  (let [gen (.def-gen f)
+        mask (- (len (.def-slots f)) 1)
+        (mut i) (defs-home f k)]
+    (while (and (= (.gen (get (.def-slots f) i)) gen) (!= (.key (get (.def-slots f) i)) k))
+      (set! i (& (+ i 1) mask)))
+    (let [sl (elem (mut (.def-slots f)) i)]
+      (when (!= (.gen sl) gen) (set! (.def-count f) (+ (.def-count f) 1)))
+      (set! (.key sl) k)
+      (set! (.value sl) v)
+      (set! (.gen sl) gen))))
+
+(defn defs-grow! [(f (ptr Func))] (-> void)
+  (let [gen (.def-gen f)
+        old (len (.def-slots f))
+        (mut live) (ArrayList::new [DefSlot] (malloc-allocator))]
+    (for i (range 0 old)
+      (let [sl (get (.def-slots f) i)] (when (= (.gen sl) gen) (push! (mut live) sl))))
+    (extend-zeroed! (mut (.def-slots f)) (if (= old 0) 64 old))
+    (for i (range 0 (len (.def-slots f))) (set! (.gen (elem (mut (.def-slots f)) i)) (: 0 u32)))
+    (set! (.def-count f) 0)
+    (for i (range 0 (len live))
+      (let [sl (get live i)] (defs-put! f (.key sl) (.value sl))))
+    (free! (mut live))))
+
+(defn defs-set! [(f (ptr Func)) (k u64) (v u32)] (-> void)
+  (when (>= (* (+ (.def-count f) 1) 2) (len (.def-slots f))) (defs-grow! f))
+  (defs-put! f k v))
+
+(defn defs-get [(f (ptr Func)) (k u64)] (-> u32)
+  (if (= (len (.def-slots f)) 0)
+      (none)
+      (let [gen (.def-gen f)
+            mask (- (len (.def-slots f)) 1)
+            (mut i) (defs-home f k)]
+        (block :found
+          (while (= (.gen (get (.def-slots f) i)) gen)
+            (when (= (.key (get (.def-slots f) i)) k) (return-from :found (.value (get (.def-slots f) i))))
+            (set! i (& (+ i 1) mask)))
+          (none)))))
+
 (defn write-var! [(f (ptr Func)) (var u32) (block u32) (v u32)] (-> void)
   (let [ld (elem (mut (.last-def f)) (i64-of var))]
     (when (and (!= (.block ld) (none)) (!= (.block ld) block))
       ; the cache moves on: keep the old definition in the map
-      (set! (mut (.defs f)) (def-key var (.block ld)) (.value ld)))
+      (defs-set! f (def-key var (.block ld)) (.value ld)))
     (set! (.block ld) block)
     (set! (.value ld) v)))
 
@@ -506,9 +621,7 @@
   (let [ld (get (.last-def f) (i64-of var))]
     (if (= (.block ld) block)
         (.value ld)
-        (match (get (.defs f) (def-key var block))
-          (Some [v] v)
-          (None [] (none))))))
+        (defs-get f (def-key var block)))))
 
 (defn new-phi! [(f (ptr Func)) (block u32) (ty i64)] (-> u32)
   (let [v (push-value! f OP-PHI ty 0 0)
@@ -614,6 +727,62 @@
 
 ;;; Finish construction: seal every block, remove trivial PHIs to a fixpoint,
 ;;; rewrite operands through forwards and lay out each block's PHIs.
+;;; Instructions with no effect besides their result.
+(defn pure-op? [(op i64)] (-> bool)
+  (or (and (>= op OP-ADD) (<= op OP-ASHR))
+      (and (>= op OP-ROTL) (<= op OP-SELECT))
+      (and (>= op OP-ADDO) (<= op OP-BITREV))
+      (and (>= op OP-FADD) (<= op OP-COPY))
+      (= op OP-PTRADD) (= op OP-ADDI)))
+
+;;; Remove pure instructions whose results are unused (address arithmetic the
+;;; access folded, results lowering computed and dropped), and with them uses
+;;; that kept others alive.
+(defn drop-dead! [(f (ptr Func))] (-> void)
+  (let [nv (len (.values f))
+        (mut uses) (.scratch-uses f)]
+    (clear! (mut uses))
+    (extend-zeroed! (mut uses) nv)
+    (for vi (range 0 nv)
+      (let [x (val f (u32-of vi))]
+        (when (and (!= (cast i64 (.op x)) OP-CONST) (= (get (.fwd f) vi) (none)))
+          (for k (range 0 (i64-of (.nops x)))
+            (let [o (i64-of (get (.operands f) (+ (i64-of (.opb x)) k)))]
+              (set! (mut uses) o (+ (get uses o) (: 1 u32))))))))
+    (for i (range 0 (len (.args f))) (let [a (i64-of (get (.args f) i))] (set! (mut uses) a (+ (get uses a) (: 1 u32)))))
+    ; newest first: a dead instruction's operands were made before it
+    (let [(mut dead) 0
+          ni (len (.insts f))
+          (mut i) (- ni 1)]
+      (while (>= i 0)
+        (let [v (get (.insts f) i)
+              x (val f v)]
+          (when (and (pure-op? (cast i64 (.op x))) (= (get uses (i64-of v)) (: 0 u32)))
+            (set! (.flags x) (| (.flags x) (: 8 u8)))
+            (set! dead (+ dead 1))
+            (for k (range 0 (i64-of (.nops x)))
+              (let [o (i64-of (get (.operands f) (+ (i64-of (.opb x)) k)))]
+                (set! (mut uses) o (- (get uses o) (: 1 u32)))))))
+        (set! i (- i 1)))
+      (set! (.scratch-uses f) uses)
+      (when (> dead 0)
+        ; rebuild `insts` without them, block by block (a block's range need
+        ; not follow the previous block's: blocks are made before they are filled)
+        (let [(mut out) (.scratch-insts f)]
+          (clear! (mut out))
+          (for b (range 0 (len (.blocks f)))
+            (let [bb (blk f (u32-of b))
+                  lo (i64-of (.ibegin bb))
+                  hi (i64-of (.iend bb))]
+              (set! (.ibegin bb) (u32-of (len out)))
+              (for j (range lo hi)
+                (let [v (get (.insts f) j)]
+                  (when (= (& (.flags (val f v)) (: 8 u8)) (: 0 u8))
+                    (push! (mut out) v))))
+              (set! (.iend bb) (u32-of (len out)))))
+          (set! (.scratch-insts f) (.insts f))
+          (set! (.insts f) out))))))
+
 (defn finish! [(f (ptr Func))] (-> void)
   (for b (range 0 (len (.blocks f))) (seal! f (u32-of b)))
   ; trivial PHIs: repeat until nothing changes
@@ -635,6 +804,7 @@
               o (get (.operands f) at)]
           (when (!= (get (.fwd f) (i64-of o)) (none))
             (set! (mut (.operands f)) at (resolve f o)))))))
+  (drop-dead! f)
   ; per-block PHI arrays, in creation order
   (clear! (mut (.phis f)))
   (for b (range 0 (len (.blocks f)))

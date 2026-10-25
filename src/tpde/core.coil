@@ -156,11 +156,20 @@
    (align u32)
    (bank u8)
    (size u32)
+   ; the C size of an integer argument held in a wider part (0: the part's):
+   ; Apple packs stack arguments at their natural size
+   (abi-size u32)
    (stack-off u32)])
+
+;;; Argument flags bits 24..26: log2 of the argument's C size plus one (0: the
+;;; part's own size). See `tpde.cir`'s AF-SIZE.
+(defn arg-flags-size [(flags u32)] (-> u32)
+  (let [code (& (>> flags (: 24 u32)) (: 7 u32))]
+    (if (= code (: 0 u32)) (: 0 u32) (<< (: 1 u32) (- code (: 1 u32))))))
 
 (defn cca-new [] (-> CCAssignment)
   (CCAssignment :reg (no-reg) :consecutive (: 0 u8) :sret false :byval false :int-ext (: 0 u8)
-                :align (: 1 u32) :bank (: 255 u8) :size (: 0 u32) :stack-off (: 0 u32)))
+                :align (: 1 u32) :bank (: 255 u8) :size (: 0 u32) :abi-size (: 0 u32) :stack-off (: 0 u32)))
 
 ;;; AAPCS64 argument assignment, with Apple's variant (`apple`): stack arguments
 ;;; packed at their natural alignment, variadic arguments always on the stack in
@@ -237,7 +246,9 @@
    (pending-since u32)
    ; tail calls: label << 32 | symbol (NONE: through x16), stubs emitted at the end
    (tail-stubs (ArrayList u64))
-   (no-fixed bool)])
+   (no-fixed bool)
+   ; while moving values into a block's PHIs: that block (else NONE)
+   (phi-block-idx u32)])
 
 (impl [A] (Compiler A)
   (new [(ad (ptr A)) (a (ptr Asm)) (arch u8)] (-> (Compiler A))
@@ -262,7 +273,14 @@
       (set! (.tail-stubs c) (ArrayList::new [u64] al))
       (set! (.cc c) (cc-new true))
       (set! (.variable-ref-list c) (none))
+      (set! (.phi-block-idx c) (none))
       c)))
+
+;;; Point the compiler (and its analyzer) at another IR instance: a client
+;;; that keeps several functions in flight switches between them.
+(defn set-adaptor! [A] [(c (ptr (Compiler A))) (ad (ptr A))] (-> void)
+  (set! (.ad c) ad)
+  (set! (.ad (.an c)) ad))
 
 (defn text-off [A] [(c (ptr (Compiler A)))] (-> u32) (u32-of (.len (load (.text c)))))
 (defn emit! [A] [(c (ptr (Compiler A))) (inst u32)] (-> void) (buf/emit32! (.text c) inst))
@@ -444,14 +462,20 @@
           (part-set! c v part p)
           (when (> size maxsize) (set! maxsize size))))
       (set! (.max-part-size v) maxsize))
-    (let [lv (load (liveness c local))]
+    (let [lv (load (liveness c local))
+          ; A PHI is first assigned in a predecessor, where TPDE judges it by
+          ; the predecessor's loop: a loop header's PHI then competes with
+          ; every definition in the loop and rarely gets a register, so the
+          ; loop's variable went through its stack slot on every iteration.
+          ; Judge a PHI by its own block's loop instead.
+          at (if (and (!= (.phi-block-idx c) (none)) (val-phi? ad value)) (.phi-block-idx c) (.cur-block-idx c))]
       ; a single-part value live beyond this block may get a fixed register
       (when (= count (: 1 u32))
         (let [bank (p-bank (.p0 v))
               cur-loop (an/loop-at (cast (ptr (Analyzer A)) (mut (.an c)))
-                                   (an/block-loop-idx (cast (ptr (Analyzer A)) (mut (.an c))) (.cur-block-idx c)))
+                                   (an/block-loop-idx (cast (ptr (Analyzer A)) (mut (.an c))) at))
               limit (fixed-limit c bank)
-              (mut try) (and (> (.last lv) (.cur-block-idx c))
+              (mut try) (and (> (.last lv) at)
                              (< (+ (.definitions-in-childs cur-loop) (fixed-count c bank)) limit))]
           (when (force-fixed? ad value) (set! try (< (fixed-count c bank) limit)))
           (when (or (not (allow-fixed? ad value)) (and (.no-fixed c) (not (force-fixed? ad value))))
@@ -546,6 +570,28 @@
 (defn evict-reg! [A] [(c (ptr (Compiler A))) (r u8)] (-> void)
   (when (= (reg-local c r) (none)) (fatal "evicting a temporary register"))
   (evict-part! c (reg-local c r) (reg-part c r)))
+
+;;; Free `r` for an argument: move the value in it to a free register no
+;;; argument uses, or, when there is none (or the value is fixed or locked to
+;;; `r`), spill it. TPDE always spills; at a tail call, or for an argument the
+;;; next one displaces, that was a store and a reload where a move does.
+(defn evict-reg-for-arg! [A] [(c (ptr (Compiler A))) (r u8)] (-> void)
+  (let [local (reg-local c r)
+        part (reg-part c r)]
+    (if (or (= local (none)) (reg-fixed? c r) (p-fixed? (ap c local part)))
+        (evict-reg! c r)
+        (let [p (ap c local part)
+              all (: 0xFFFFFFFFFFFFFFFF u64)
+              free (& (& (.allocatable c) (^ (.used c) all))
+                      (& (bank-regs (p-bank p)) (^ (arch-arg-regs c) all)))]
+          (if (= free (: 0 u64))
+              (evict-reg! c r)
+              (let [nr (ctz64 free)]
+                (arch-mov! c nr r (p-size p))
+                (unmark-used! c r)
+                (mark-used! c nr local part)
+                (mark-clobbered! c nr)
+                (ap-set-reg! c local part nr)))))))
 
 (defn free-reg! [A] [(c (ptr (Compiler A))) (r u8)] (-> void)
   (let [local (reg-local c r) part (reg-part c r)]
@@ -904,7 +950,9 @@
             mode (cond (va-var-ref? va) (: 0 u8)
                        (and (<= (.refs va) (: 1 u32)) (not (va-flag? va (: 16 u8)))) (: 2 u8)
                        :else (: 1 u8))]
-        (when (not (va-live? va)) (fatal "use of a value before its definition"))
+        (when (not (va-live? va))
+          (eprintln "tpde: value {} ({}) used before its definition" v (inst-name (.ad c) v))
+          (fatal "use of a value before its definition"))
         (ValueRef :mode mode :local local :value v))))
 
 (defn result-ref! [(A IRAdaptor IRCompiler)] [(c (ptr (Compiler A))) (v u32)] (-> ValueRef)
@@ -1277,6 +1325,11 @@
       (move-to-phi-nodes-impl! c target-idx))))
 
 (defn move-to-phi-nodes-impl! [(A IRAdaptor IRCompiler)] [(c (ptr (Compiler A))) (target-idx u32)] (-> void)
+  (set! (.phi-block-idx c) target-idx)
+  (move-to-phi-nodes-into! c target-idx)
+  (set! (.phi-block-idx c) (none)))
+
+(defn move-to-phi-nodes-into! [(A IRAdaptor IRCompiler)] [(c (ptr (Compiler A))) (target-idx u32)] (-> void)
   (let [ad (.ad c)
         an (cast (ptr (Analyzer A)) (mut (.an c)))
         target (an/block-ref an target-idx)
@@ -1449,9 +1502,9 @@
           (if (vp-in-reg? c (cast (ptr ValuePart) (mut vp)) r)
               (do (if (vp-can-salvage? c (cast (ptr ValuePart) (mut vp)))
                       (vp-salvage! c (mut vp))
-                      (evict-reg! c r))
+                      (evict-reg-for-arg! c r))
                   (when needs-ext (arch-intext! c r r ext-sign ext-bits (: 64 u32))))
-              (do (when (reg-used? c r) (evict-reg! c r))
+              (do (when (reg-used? c r) (evict-reg-for-arg! c r))
                   (cond
                     (vp-can-salvage? c (cast (ptr ValuePart) (mut vp)))
                       (let [src (vp-salvage! c (mut vp))]
@@ -1686,7 +1739,8 @@
             (vp-reset! c (mut vp))))
       :else
         (let [count (vr-part-count c (cast (ptr ValueRef) (mut vr)))
-              group (& (>> (cur-arg-flags ad idx) (: 16 u32)) (: 0xFF u32))]
+              flags (cur-arg-flags ad idx)
+              group (& (>> flags (: 16 u32)) (: 0xFF u32))]
           (for pi (range 0 (i64-of count))
             (let [(mut vp) (vr-part c (cast (ptr ValueRef) (mut vr)) (u32-of pi))
                   (mut cca) (cca-new)
@@ -1695,6 +1749,8 @@
               (set! (.bank cca) (vp-bank c (cast (ptr ValuePart) (mut vp))))
               (set! (.size cca) (vp-size c (cast (ptr ValuePart) (mut vp))))
               (set! (.align cca) (if (and (= pi 0) (> count (: 1 u32))) (* (.size cca) count) (.size cca)))
+              (set! (.abi-size cca) (arg-flags-size flags))
+              (when (!= (& flags (: 0x80 u32)) (: 0 u32)) (set! (.int-ext cca) (: 0x80 u8)))
               (arch-assign-arg! c (mut cca))
               (arch-prologue-assign-arg-part! c (mut vp) (mut cca))
               (vp-reset! c (mut vp))))))
