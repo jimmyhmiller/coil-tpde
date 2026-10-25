@@ -1,3 +1,5 @@
+; SPDX-FileCopyrightText: 2026 Jimmy Miller
+; SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 ;;; tpde-test: the TIR test driver, with the command line of TPDE's `tpde_test`
 ;;; so the same `.tir` tests run against both.
 (module tpde.tools.tpde-test)

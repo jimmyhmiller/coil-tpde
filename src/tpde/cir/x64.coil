@@ -1,3 +1,5 @@
+; SPDX-FileCopyrightText: 2026 Jimmy Miller
+; SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 ;;; Instruction selection for CIR on x86-64 (System V), the counterpart of
 ;;; `tpde.cir.a64`. The baseline is x86-64-v2 (SSE4.2, POPCNT): what Rosetta
 ;;; runs. Where it has no instruction (FMA, round-half-away), libm is called.

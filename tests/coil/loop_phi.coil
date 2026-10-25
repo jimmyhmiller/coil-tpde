@@ -1,3 +1,5 @@
+; SPDX-FileCopyrightText: 2026 Jimmy Miller
+; SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 ;;; Loop-carried variables (Braun PHIs at loop headers) with a store to memory
 ;;; in the loop body, and an argument live across the loop.
 (module tests.loop-phi)

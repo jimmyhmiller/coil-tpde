@@ -1,3 +1,5 @@
+; SPDX-FileCopyrightText: 2026 Jimmy Miller
+; SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 ;;; CIR as a tpde IR: the adaptor (one function per module) and the codegen
 ;;; description. Instruction selection is in `tpde.cir.a64`.
 (module tpde.cir.adaptor)

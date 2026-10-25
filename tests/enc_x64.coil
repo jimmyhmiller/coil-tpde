@@ -1,3 +1,5 @@
+; SPDX-FileCopyrightText: 2026 Jimmy Miller
+; SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 ;;; Encoder check: prints `<bytes> ; <expected llvm-mc text>` per instruction.
 ;;; `tpde-check enc` feeds the bytes to `llvm-mc --disassemble` (Intel syntax)
 ;;; and compares.

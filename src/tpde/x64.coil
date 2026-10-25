@@ -1,3 +1,7 @@
+; SPDX-FileCopyrightText: 2025 Contributors to TPDE <https://tpde.org>
+; SPDX-FileCopyrightText: 2026 Jimmy Miller
+; SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+; Ported to Coil from TPDE (commit 9779acf) and modified; see NOTICE.
 ;;; The x86-64 part of the compiler (TPDE's CompilerX64): the System V
 ;;; calling convention, an rbp frame whenever there is a frame.
 ;;;

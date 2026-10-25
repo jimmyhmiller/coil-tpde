@@ -1,3 +1,5 @@
+; SPDX-FileCopyrightText: 2026 Jimmy Miller
+; SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 ;;; Aggregates by value through every System V class: one or two eightbytes,
 ;;; INTEGER, SSE or mixed, MEMORY (copied onto the stack), with the registers
 ;;; running out part way (a pair goes to the stack whole). On arm64 the same

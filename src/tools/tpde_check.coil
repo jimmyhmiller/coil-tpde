@@ -1,3 +1,5 @@
+; SPDX-FileCopyrightText: 2026 Jimmy Miller
+; SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 ;;; tpde-check: differential tests of this port against the C++ TPDE
 ;;; reference (`ref/`), and the TIR generator they use. Run from the
 ;;; repository root after `coil build` (build/tpde-test) and `ref/build.sh`.

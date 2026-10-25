@@ -1,3 +1,7 @@
+; SPDX-FileCopyrightText: 2025 Contributors to TPDE <https://tpde.org>
+; SPDX-FileCopyrightText: 2026 Jimmy Miller
+; SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+; Ported to Coil from TPDE (commit 9779acf) and modified; see NOTICE.
 ;;; The interface an IR's code generator provides to the compiler core, beside
 ;;; `tpde.adaptor/IRAdaptor`: how each value splits into register-sized parts,
 ;;; which values are constants, and the instruction selector itself. TPDE puts

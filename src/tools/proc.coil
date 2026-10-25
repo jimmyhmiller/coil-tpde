@@ -1,3 +1,5 @@
+; SPDX-FileCopyrightText: 2026 Jimmy Miller
+; SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 ;;; Strings, processes and files for the tpde tools (tpde-bench, tpde-check).
 (module tpde.tools.proc)
 (import "coil.alloc" :use [malloc-allocator])

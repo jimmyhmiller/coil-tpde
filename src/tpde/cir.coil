@@ -1,3 +1,5 @@
+; SPDX-FileCopyrightText: 2026 Jimmy Miller
+; SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 ;;; CIR: a small, low-level SSA IR that tpde compiles; the Coil compiler lowers
 ;;; to it. One function at a time is built, compiled and reset.
 ;;;

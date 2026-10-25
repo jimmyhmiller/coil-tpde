@@ -1,3 +1,5 @@
+; SPDX-FileCopyrightText: 2026 Jimmy Miller
+; SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 ;;; A function whose only calls are tail calls is a leaf, so its values may get
 ;;; fixed caller-saved registers; a tail call must not evict them, or a later
 ;;; block (compiled after it) finds the value neither in its register nor in a

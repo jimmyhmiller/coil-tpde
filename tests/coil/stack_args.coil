@@ -1,3 +1,5 @@
+; SPDX-FileCopyrightText: 2026 Jimmy Miller
+; SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 ;;; Narrow integer arguments past the eighth: Apple packs stack arguments at
 ;;; their natural size (i8 at +0, i16 at +2, i32 at +4, i64 at +8).
 (module tests.stack-args)

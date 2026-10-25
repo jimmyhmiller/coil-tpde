@@ -1,3 +1,5 @@
+; SPDX-FileCopyrightText: 2026 Jimmy Miller
+; SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 ;;; Builds CIR functions with the builder (Braun SSA for variables), compiles them
 ;;; with tpde and writes a Mach-O object; tests/cir_test.c links and checks it.
 (module tpde.tests.cir)

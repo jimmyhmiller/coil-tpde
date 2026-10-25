@@ -1,3 +1,7 @@
+; SPDX-FileCopyrightText: 2025 Contributors to TPDE <https://tpde.org>
+; SPDX-FileCopyrightText: 2026 Jimmy Miller
+; SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+; Ported to Coil from TPDE (commit 9779acf) and modified; see NOTICE.
 ;;; The IR adaptor for TIR (TPDE's `TestIRAdaptor`). Every handle is an index:
 ;;; a function into `funcs`, a block into `blocks`, a value or instruction into
 ;;; `values`.

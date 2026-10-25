@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Jimmy Miller
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 #include <stdio.h>
 #include <stdint.h>
 int64_t sum(int64_t, int64_t), callmany(int64_t, int64_t), pressure(int64_t, int64_t), swapper(int64_t, int64_t, int64_t, int64_t);

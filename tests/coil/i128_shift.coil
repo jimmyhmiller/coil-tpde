@@ -1,3 +1,5 @@
+; SPDX-FileCopyrightText: 2026 Jimmy Miller
+; SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 ;;; 128-bit shifts by 64 or more: on x86-64 the fill word was made after the
 ;;; `test cl, 64` its cmov reads, by a flag-setting `sar`.
 (module tests.i128-shift)

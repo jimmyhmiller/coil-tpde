@@ -1,3 +1,5 @@
+; SPDX-FileCopyrightText: 2026 Jimmy Miller
+; SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 ;;; Instruction selection for CIR on arm64 (the counterpart of TPDE-LLVM's
 ;;; LLVMCompilerBase + LLVMCompilerArm64, by hand, without encodegen).
 ;;;

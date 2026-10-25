@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Jimmy Miller
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 #include <stdio.h>
 #include <stdint.h>
 int64_t sum_to(int64_t), fib(int64_t), count_down(int64_t, int64_t), mem(int64_t *, int64_t);

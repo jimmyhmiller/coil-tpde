@@ -1,3 +1,7 @@
+; SPDX-FileCopyrightText: 2025 Contributors to TPDE <https://tpde.org>
+; SPDX-FileCopyrightText: 2026 Jimmy Miller
+; SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+; Ported to Coil from TPDE (commit 9779acf) and modified; see NOTICE.
 ;;; The analysis TPDE runs before compiling a function (`tpde/Analyzer.hpp`):
 ;;; a reverse post-order of the blocks, the loop tree (Wei et al., "A New
 ;;; Algorithm for Identifying Loops in Decompilation"), a block layout that keeps

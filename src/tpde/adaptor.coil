@@ -1,3 +1,7 @@
+; SPDX-FileCopyrightText: 2025 Contributors to TPDE <https://tpde.org>
+; SPDX-FileCopyrightText: 2026 Jimmy Miller
+; SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+; Ported to Coil from TPDE (commit 9779acf) and modified; see NOTICE.
 ;;; The interface an IR implements to be compiled by tpde (TPDE's `IRAdaptor`).
 ;;;
 ;;; Every reference is an opaque `u32` handle whose meaning belongs to the

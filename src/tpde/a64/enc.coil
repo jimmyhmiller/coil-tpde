@@ -1,3 +1,7 @@
+; SPDX-FileCopyrightText: 2025 Contributors to TPDE <https://tpde.org>
+; SPDX-FileCopyrightText: 2026 Jimmy Miller
+; SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+; Ported to Coil from TPDE (commit 9779acf) and modified; see NOTICE.
 ;;; AArch64 instruction encoders. Each function returns the 32-bit instruction
 ;;; word; registers are 0–31 (31 is SP or ZR, by instruction). This plays the
 ;;; part of disarm64 in TPDE. `sf` selects the 64-bit form.
