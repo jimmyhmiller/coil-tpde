@@ -137,6 +137,7 @@
   (val-const-word [(self (ptr TirAdaptor)) (v u32) (part u32) (word u32)] (-> u64) (: 0 u64))
   (val-sym [(self (ptr TirAdaptor)) (c (ptr (Compiler TirAdaptor))) (v u32)] (-> u32) (: 0 u32))
   (val-sym-addend [(self (ptr TirAdaptor)) (v u32)] (-> i64) 0)
+  (cur-arg-flags [(self (ptr TirAdaptor)) (i u32)] (-> u32) (: 0 u32))
   (cur-may-emit-calls? [(self (ptr TirAdaptor))] (-> bool)
     (.has-call (tir/func-at (.ir self) (.cur-func self))))
   (force-fixed? [(self (ptr TirAdaptor)) (v u32)] (-> bool) (.force-fixed (tv self v)))

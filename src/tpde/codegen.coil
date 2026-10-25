@@ -24,6 +24,9 @@
   ;;; For VAL-SYM: the symbol (an index into the assembler's symbols) and addend.
   (val-sym [(self (ptr Self)) (c (ptr (Compiler Self))) (v u32)] (-> u32))
   (val-sym-addend [(self (ptr Self)) (v u32)] (-> i64))
+  ;;; Flags of argument `i` (as for call operands): bits 16..23 say how many
+  ;;; following arguments must stay with it in consecutive registers.
+  (cur-arg-flags [(self (ptr Self)) (i u32)] (-> u32))
   ;;; Whether the current function may contain calls (TPDE's
   ;;; cur_func_may_emit_calls); a function that cannot is a leaf.
   (cur-may-emit-calls? [(self (ptr Self))] (-> bool))

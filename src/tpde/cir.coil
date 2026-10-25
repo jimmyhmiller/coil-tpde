@@ -155,6 +155,7 @@
    (edges (ArrayList Edge))
    (args (ArrayList u32))
    (arg-sret (ArrayList bool))
+   (arg-flags (ArrayList u32))
    (allocas (ArrayList u32))
    (phis (ArrayList u32))
    (case-values (ArrayList u64))
@@ -183,7 +184,7 @@
             :values (ArrayList::new [Value] a) :operands (ArrayList::new [u32] a)
             :argflags (ArrayList::new [u32] a) :insts (ArrayList::new [u32] a)
             :blocks (ArrayList::new [Block] a) :edges (ArrayList::new [Edge] a)
-            :args (ArrayList::new [u32] a) :arg-sret (ArrayList::new [bool] a)
+            :args (ArrayList::new [u32] a) :arg-sret (ArrayList::new [bool] a) :arg-flags (ArrayList::new [u32] a)
             :allocas (ArrayList::new [u32] a)
             :phis (ArrayList::new [u32] a) :case-values (ArrayList::new [u64] a)
             :fwd (ArrayList::new [u32] a) :bytes (ArrayList::new [u8] a)
@@ -204,6 +205,7 @@
   (clear! (mut (.edges f)))
   (clear! (mut (.args f)))
   (clear! (mut (.arg-sret f)))
+  (clear! (mut (.arg-flags f)))
   (clear! (mut (.allocas f)))
   (clear! (mut (.phis f)))
   (clear! (mut (.case-values f)))
@@ -247,9 +249,14 @@
 (defn sym! [(f (ptr Func)) (sym u32) (addend i64)] (-> u32) (push-value! f OP-SYM T-I64 (i64-of sym) addend))
 
 (defn arg! [(f (ptr Func)) (ty i64) (sret bool)] (-> u32)
+  (arg-flagged! f ty sret (: 0 u32)))
+
+;;; An argument with flags (see the AF-… constants and bits 16..23).
+(defn arg-flagged! [(f (ptr Func)) (ty i64) (sret bool) (flags u32)] (-> u32)
   (let [v (push-value! f OP-ARG ty (len (.args f)) 0)]
     (push! (mut (.args f)) v)
     (push! (mut (.arg-sret f)) sret)
+    (push! (mut (.arg-flags f)) flags)
     v))
 
 ;;; A stack slot of `size` bytes; its value is the slot's address.

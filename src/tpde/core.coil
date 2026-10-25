@@ -1685,11 +1685,12 @@
             (arch-prologue-assign-arg-part! c (mut vp) (mut cca))
             (vp-reset! c (mut vp))))
       :else
-        (let [count (vr-part-count c (cast (ptr ValueRef) (mut vr)))]
+        (let [count (vr-part-count c (cast (ptr ValueRef) (mut vr)))
+              group (& (>> (cur-arg-flags ad idx) (: 16 u32)) (: 0xFF u32))]
           (for pi (range 0 (i64-of count))
             (let [(mut vp) (vr-part c (cast (ptr ValueRef) (mut vr)) (u32-of pi))
                   (mut cca) (cca-new)
-                  remaining (- (- count (u32-of pi)) (: 1 u32))]
+                  remaining (+ (- (- count (u32-of pi)) (: 1 u32)) group)]
               (set! (.consecutive cca) (cast u8 (if (> remaining (: 255 u32)) (: 255 u32) remaining)))
               (set! (.bank cca) (vp-bank c (cast (ptr ValuePart) (mut vp))))
               (set! (.size cca) (vp-size c (cast (ptr ValuePart) (mut vp))))

@@ -126,6 +126,7 @@
             :else (cast u64 (.imm2 x)))))
   (val-sym [(self (ptr Func)) (c (ptr (Compiler Func))) (v u32)] (-> u32) (u32-of (.imm (cir/val self v))))
   (val-sym-addend [(self (ptr Func)) (v u32)] (-> i64) (.imm2 (cir/val self v)))
+  (cur-arg-flags [(self (ptr Func)) (i u32)] (-> u32) (get (.arg-flags self) (i64-of i)))
   (cur-may-emit-calls? [(self (ptr Func))] (-> bool) (.has-calls self))
   (force-fixed? [(self (ptr Func)) (v u32)] (-> bool) false)
   (allow-fixed? [(self (ptr Func)) (v u32)] (-> bool) true)
