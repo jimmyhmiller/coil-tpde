@@ -1,0 +1,37 @@
+;;; Aggregates by value through every System V class: one or two eightbytes,
+;;; INTEGER, SSE or mixed, MEMORY (copied onto the stack), with the registers
+;;; running out part way (a pair goes to the stack whole). On arm64 the same
+;;; program exercises AAPCS64's classes.
+(module tests.sysv-aggregates)
+(import "coil.io" :use *)
+(defstruct DI [(d f64) (i i64)])
+(defstruct ID [(i i64) (d f64)])
+(defstruct FF [(a f32) (b f32)])
+(defstruct FFF [(a f32) (b f32) (c f32)])
+(defstruct II [(a i64) (b i64)])
+(defstruct Big [(a i64) (b f64) (c i64) (d i32)])
+(defn di [(x DI)] (-> f64) (+ (.d x) (cast f64 (.i x))))
+(defn mk-di [(d f64) (i i64)] (-> DI) (DI :d d :i i))
+(defn mk-id [(i i64) (d f64)] (-> ID) (ID :i i :d d))
+(defn mk-fff [(a f32)] (-> FFF) (FFF :a a :b (* a 2.0) :c (* a 3.0)))
+(defn mk-big [(n i64)] (-> Big) (Big :a n :b 0.5 :c (* n 2) :d 7))
+;; five GP registers used first: an II pair no longer fits, a DI does
+(defn late [(a i64) (b i64) (c i64) (d i64) (e i64) (p II) (q DI) (r ID) (s Big) (f FF) (g FFF)] (-> f64)
+  (+ (cast f64 (+ a (+ b (+ c (+ d e)))))
+     (+ (cast f64 (+ (.a p) (.b p)))
+        (+ (di q)
+           (+ (+ (cast f64 (.i r)) (.d r))
+              (+ (+ (cast f64 (+ (.a s) (+ (.c s) (cast i64 (.d s))))) (.b s))
+                 (cast f64 (+ (+ (.a f) (.b f)) (+ (.a g) (+ (.b g) (.c g)))))))))))
+;; eight XMM registers used first: a mixed pair goes to the stack whole
+(defn xlate [(a f64) (b f64) (c f64) (d f64) (e f64) (f f64) (g f64) (h f64) (q DI) (n i64)] (-> f64)
+  (+ (+ (+ a b) (+ c d)) (+ (+ (+ e f) (+ g h)) (+ (di q) (cast f64 n)))))
+(defn main [] (-> i32)
+  (let [q (mk-di 1.25 2)
+        r (mk-id 3 4.5)
+        g (mk-fff 1.5)
+        s (mk-big 10)]
+    (println "{} {} {} {}" (di q) (.d r) (.c g) (.c s))
+    (println "{}" (late 1 2 3 4 5 (II :a 6 :b 7) q r s (FF :a 0.25 :b 0.5) g))
+    (println "{}" (xlate 1.0 2.0 3.0 4.0 5.0 6.0 7.0 8.0 q 9))
+    0))

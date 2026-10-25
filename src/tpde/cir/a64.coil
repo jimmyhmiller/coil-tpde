@@ -845,10 +845,20 @@
     true))
 
 ;; Inline copy of `n` bytes between two addresses.
+;; 16 bytes at a time through a SIMD scratch register (ldr q / str q), the
+;; rest through a GP one.
 (defn copy-bytes! [(c (ptr (Compiler Func))) (d Addr) (s Addr) (n i64)] (-> void)
   (let [(mut t) (core/scratch-new)
         tr (core/scratch-alloc-gp! c (mut t))
         (mut o) 0]
+    (when (>= n 16)
+      (let [(mut q) (core/scratch-new)
+            qr (core/scratch-alloc! c (mut q) (: 1 u8))]
+        (while (>= (- n o) 16)
+          (a64/load-off! c qr (.base s) (+ (.off s) o) (: 16 u32) false)
+          (a64/store-off! c (.base d) (+ (.off d) o) qr (: 16 u32))
+          (set! o (+ o 16)))
+        (core/scratch-reset! c (mut q))))
     (while (>= (- n o) 8)
       (a64/load-off! c tr (.base s) (+ (.off s) o) (: 8 u32) false)
       (a64/store-off! c (.base d) (+ (.off d) o) tr (: 8 u32))
@@ -988,6 +998,15 @@
 ; ============================ calls =========================================
 
 (defn arg-cca [(flags u32) (bank u8) (size u32)] (-> CCAssignment)
+  (if (cir/af-byval? flags)
+      (let [(mut cca) (core/cca-new)]
+        (set! (.byval cca) true)
+        (set! (.size cca) (cir/af-byval-size flags))
+        (set! (.align cca) (: 8 u32))
+        cca)
+      (arg-cca-reg flags)))
+
+(defn arg-cca-reg [(flags u32)] (-> CCAssignment)
   (let [(mut cca) (core/cca-new)]
     (when (!= (& flags (: 0x80 u32)) (: 0 u32))
       (set! (.int-ext cca) (cast u8 (| (& flags (: 0x7F u32)) (: 0x80 u32)))))
@@ -996,6 +1015,7 @@
     (set! (.consecutive cca) (cast u8 (& (>> flags (: 16 u32)) (: 0xFF u32))))
     (set! (.sret cca) (!= (& flags (: 0x100 u32)) (: 0 u32)))
     (set! (.abi-size cca) (core/arg-flags-size flags))
+    (set! (.mixed cca) (!= (& flags (: 0x1000 u32)) (: 0 u32)))
     cca))
 
 ;;; Move the call's arguments into place; returns the argument registers.
@@ -1088,7 +1108,10 @@
         (if (>= target 0)
             (let [regs (add-args! c inst (: 0 u32))]
               (core/tail-call-prepare! c)
-              (a64/tail-jump! c (cast u32 target)))
+              ; to itself: a branch back past the prologue, the frame reused
+              (if (and (= (cast u32 target) (.cur-sym c)) (not (.has-dynamic-alloca c)))
+                  (a64/raw-jump! c (core/jmp) (.body-label c))
+                  (a64/tail-jump! c (cast u32 target))))
             (let [(mut tv) (core/val-ref! c (opv c inst (: 0 u32)))
                   (mut tp) (core/vr-part c (cast (ptr ValueRef) (mut tv)) (: 0 u32))
                   regs (add-args! c inst (: 1 u32))]
@@ -1326,9 +1349,9 @@
       (= op cir/OP-ATOMIC-STORE) (atomic-store! c inst)
       (= op cir/OP-FENCE) (do (emit! c (e/dmb-ish)) true)
       (= op cir/OP-CALL) (call! c inst)
-      (= op cir/OP-TAILCALL) (tailcall! c inst)
+      (= op cir/OP-TAILCALL) (do (core/term-begin! c) (let [ok (tailcall! c inst)] (core/term-end! c) ok))
       (= op cir/OP-SHIMCALL) (shimcall! c inst)
-      (= op cir/OP-RET) (ret! c inst)
+      (= op cir/OP-RET) (do (core/term-begin! c) (let [ok (ret! c inst)] (core/term-end! c) ok))
       (= op cir/OP-BR) (do (core/generate-uncond-branch! c (block-target c inst (: 0 u32))) true)
       (= op cir/OP-CONDBR) (condbr! c inst)
       (= op cir/OP-SWITCH) (switch! c inst)

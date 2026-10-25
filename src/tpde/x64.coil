@@ -58,6 +58,13 @@
 ; CCState: ngrn/nsrn count GP/XMM argument registers, nsaa the stack bytes,
 ; must-stack the arguments that must follow onto the stack.
 
+; Whether the part and the rest of its group fit in registers: `used`/`n` of
+; its bank, `oused`/`on` of the other (a mixed pair needs one of each).
+(defn fits? [(st (ptr CCState)) (cca (mut CCAssignment)) (used u32) (n u32) (oused u32) (on u32)] (-> bool)
+  (if (.mixed cca)
+      (and (< used n) (< oused on))
+      (< (+ used (cast u32 (.consecutive cca))) n)))
+
 (defn assign-arg! [(st (ptr CCState)) (cca (mut CCAssignment))] (-> void)
   (cond
     (.byval cca)
@@ -66,7 +73,7 @@
         (set! (.stack-off cca) (.nsaa st))
         (set! (.nsaa st) (+ (.nsaa st) (.size cca))))
     (= (.bank cca) (: 0 u8))
-      (if (and (= (.must-stack st) (: 0 u32)) (< (+ (.ngrn st) (cast u32 (.consecutive cca))) (: 6 u32)))
+      (if (and (= (.must-stack st) (: 0 u32)) (fits? st (mut cca) (.ngrn st) (: 6 u32) (.nsrn st) (: 8 u32)))
           (do (set! (.reg cca) (gp-arg-reg (.ngrn st)))
               (set! (.ngrn st) (+ (.ngrn st) (: 1 u32))))
           (do (set! (.must-stack st) (+ (cast u32 (.consecutive cca)) (: 1 u32)))
@@ -74,7 +81,7 @@
               (set! (.stack-off cca) (.nsaa st))
               (set! (.nsaa st) (+ (.nsaa st) (: 8 u32)))))
     :else
-      (if (and (= (.must-stack st) (: 0 u32)) (< (.nsrn st) (: 8 u32)))
+      (if (and (= (.must-stack st) (: 0 u32)) (fits? st (mut cca) (.nsrn st) (: 8 u32) (.ngrn st) (: 6 u32)))
           (do (set! (.reg cca) (cast u8 (+ (: 32 u32) (.nsrn st))))
               (set! (.nsrn st) (+ (.nsrn st) (: 1 u32))))
           (let [size (align-up (.size cca) (: 8 u32))]
@@ -218,20 +225,24 @@
         (buf/patch32! (tx c) o (cast u32 (- (cast i64 target) o))))))
 
 ;;; A register for a fixed assignment: callee-saved when the function calls,
-;;; otherwise caller-saved first. Never rax, rcx, rdx (implicit operands of
-;;; division, shifts and returns), nor an argument register in a leaf with
-;;; tail calls. There are no callee-saved XMM registers.
+;;; otherwise caller-saved first (in a leaf with tail calls, argument registers
+;;; after the others). Never rax, rcx, rdx (implicit operands of division,
+;;; shifts and returns). There are no callee-saved XMM registers.
 (defn select-fixed-reg [A] [(c (ptr (Compiler A))) (bank u8) (size u32)] (-> u8)
   (if (and (= bank (: 1 u8)) (> size (: 8 u32)))
       (core/no-reg)
-      (let [excl (| (| (| (bit 0) (bit 1)) (bit 2)) (if (.leaf-tail-calls c) (arg-regs) (: 0 u64)))
-            mask (& (core/bank-regs bank) (^ excl (: 0xFFFFFFFFFFFFFFFF u64)))
-            free (& (.allocatable c) (^ (.used c) (: 0xFFFFFFFFFFFFFFFF u64)))
+      (let [all (: 0xFFFFFFFFFFFFFFFF u64)
+            mask (& (core/bank-regs bank) (^ (| (| (bit 0) (bit 1)) (bit 2)) all))
+            free (& (.allocatable c) (^ (.used c) all))
             csr (callee-saved)
-            possible (if (not (.is-leaf c))
-                         (& (& free csr) mask)
-                         (let [p (& (& free (^ csr (: 0xFFFFFFFFFFFFFFFF u64))) mask)]
-                           (if (!= p (: 0 u64)) p (& (& free csr) mask))))]
+            ; a leaf with tail calls: caller-saved registers no argument uses,
+            ; then argument registers (a terminator moves them aside, see
+            ; core/term-begin!), then callee-saved ones
+            p0 (if (.leaf-tail-calls c) (& (& (& free (^ csr all)) mask) (^ (arg-regs) all)) (: 0 u64))
+            possible (cond (not (.is-leaf c)) (& (& free csr) mask)
+                           (!= p0 (: 0 u64)) p0
+                           :else (let [p (& (& free (^ csr all)) mask)]
+                                   (if (!= p (: 0 u64)) p (& (& free csr) mask))))]
         (if (= possible (: 0 u64)) (core/no-reg) (cast u8 (primitive/ctz possible))))))
 
 ; ============================ prologue / epilogue ===========================
@@ -314,8 +325,10 @@
 
 ;;; A tail call after the arguments were added: branch to a per-site stub that
 ;;; runs the epilogue and jumps to `sym` (NONE: to r11).
+;;; A tail call: the epilogue, then a jump (emitted with the epilogues by
+;;; finish-func!). Unlike a call it needs no frame of its own: nothing runs
+;;; below this function's rsp, so the red zone stays usable.
 (defn tail-jump! [A] [(c (ptr (Compiler A))) (sym u32)] (-> void)
-  (set! (.generated-call c) true)
   (let [l (core/label-create! c)]
     (push! (mut (.tail-stubs c)) (| (<< (cast u64 l) (: 32 u64)) (cast u64 sym)))
     (raw-jump! c (core/jmp) l)))

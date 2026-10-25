@@ -2,7 +2,7 @@
 ;;; "Gates"), run against a Coil compiler binary.
 ;;;
 ;;;   tpde-bench compile-time COIL FILE [RUNS]
-;;;       Builds FILE with `--backend tpde` and with `-O0` (LLVM) RUNS times
+;;;       Compiles FILE to an object with `--backend tpde` and with `-O0` (LLVM) RUNS times
 ;;;       each (default 5) and compares the medians of the backend spans that
 ;;;       `--timings` reports. Fails unless tpde is at least 10x faster.
 ;;;   tpde-bench examples COIL DIR
@@ -11,6 +11,9 @@
 ;;;   tpde-bench runtime COIL DIR [RUNS]
 ;;;       Builds every DIR/*.coil both ways and reports the median run time of
 ;;;       each (default 5 runs).
+;;;
+;;; A trailing `--target TRIPLE` builds both ways for that target (for example
+;;; x86_64-apple-macosx11.0.0, run under Rosetta).
 ;;;
 ;;; Builds go to /tmp/tpde-bench.
 (module tpde.tools.tpde-bench)
@@ -27,17 +30,37 @@
 
 ;;; `coil build SRC -o OUT FLAGS...`
 (defn build [(coil (slice u8)) (src (slice u8)) (out (slice u8)) (flags (slice (slice u8)))] (-> Ran)
-  (let [(mut av) (list1 "build")]
+  (coil-cmd coil "build" src out flags))
+
+;;; `coil emit-obj SRC -o OUT FLAGS...`: the object only (no link, whose
+;;; inputs may not exist for a cross target).
+(defn emit-obj [(coil (slice u8)) (src (slice u8)) (out (slice u8)) (flags (slice (slice u8)))] (-> Ran)
+  (coil-cmd coil "emit-obj" src out flags))
+
+(defn coil-cmd [(coil (slice u8)) (cmd (slice u8)) (src (slice u8)) (out (slice u8)) (flags (slice (slice u8)))] (-> Ran)
+  (let [(mut av) (list1 cmd)]
     (push! (mut av) src)
     (push! (mut av) "-o")
     (push! (mut av) out)
     (for i (range 0 (len flags)) (push! (mut av) (get flags i)))
     (run-cmd coil (argv-of av) 600)))
 
-(defn tpde-flags [] (-> (ArrayList (slice u8)))
-  (let [(mut l) (list1 "--backend")] (push! (mut l) "tpde") l))
+;;; The `--target` argument, or "".
+(defn target [] (-> (slice u8))
+  (let [(mut t) ""]
+    (for i (range 1 (- (args/count) 1))
+      (when (= (args/nth i) "--target") (set! t (args/nth (+ i 1)))))
+    t))
 
-(defn llvm-flags [] (-> (ArrayList (slice u8))) (list1 "-O0"))
+(defn with-target [(flags (ArrayList (slice u8)))] (-> (ArrayList (slice u8)))
+  (let [(mut l) flags t (target)]
+    (when (> (len t) 0) (push! (mut l) "--target") (push! (mut l) t))
+    l))
+
+(defn tpde-flags [] (-> (ArrayList (slice u8)))
+  (let [(mut l) (list1 "--backend")] (push! (mut l) "tpde") (with-target l)))
+
+(defn llvm-flags [] (-> (ArrayList (slice u8))) (with-target (list1 "-O0")))
 
 (defn with-timings [(flags (ArrayList (slice u8)))] (-> (ArrayList (slice u8)))
   (let [(mut l) flags] (push! (mut l) "--timings") l))
@@ -93,8 +116,8 @@
     (push! (mut lln) "backend.llvm-optimize")
     (push! (mut lln) "backend.object-emit")
     (for r (range 0 runs)
-      (let [t (build coil file (cat2 OUT-DIR "/ct-tpde") (argv-of (with-timings (tpde-flags))))
-            l (build coil file (cat2 OUT-DIR "/ct-llvm") (argv-of (with-timings (llvm-flags))))
+      (let [t (emit-obj coil file (cat2 OUT-DIR "/ct-tpde.o") (argv-of (with-timings (tpde-flags))))
+            l (emit-obj coil file (cat2 OUT-DIR "/ct-llvm.o") (argv-of (with-timings (llvm-flags))))
             tms (span-ms (.err t) (argv-of tpn))
             lms (span-ms (.err l) (argv-of lln))]
         (if (or (!= (.code t) 0) (!= (.code l) 0) (< tms 0) (< lms 0))
@@ -193,10 +216,11 @@
   (eprintln "usage: tpde-bench compile-time COIL FILE [RUNS]")
   (eprintln "       tpde-bench examples COIL DIR")
   (eprintln "       tpde-bench runtime COIL DIR [RUNS]")
+  (eprintln "       (any of them) ... --target TRIPLE")
   2)
 
 (defn arg-int [(i i64) (default i64)] (-> i64)
-  (if (< i (args/count)) (match (parse-int (args/nth i)) (Some [v] v) (None [] default)) default))
+  (if (and (< i (args/count)) (!= (args/nth i) "--target")) (match (parse-int (args/nth i)) (Some [v] v) (None [] default)) default))
 
 (defn main [(argc i32) (argv (ptr (ptr i8)))] (-> i64)
   (args/init! argc argv)

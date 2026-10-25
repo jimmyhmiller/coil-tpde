@@ -160,6 +160,8 @@
    ; the C size of an integer argument held in a wider part (0: the part's):
    ; Apple packs stack arguments at their natural size
    (abi-size u32)
+   ; System V: the group's other part is in the other bank (see AF-MIXED)
+   (mixed bool)
    (stack-off u32)])
 
 ;;; Argument flags bits 24..26: log2 of the argument's C size plus one (0: the
@@ -170,7 +172,7 @@
 
 (defn cca-new [] (-> CCAssignment)
   (CCAssignment :reg (no-reg) :consecutive (: 0 u8) :sret false :byval false :int-ext (: 0 u8)
-                :align (: 1 u32) :bank (: 255 u8) :size (: 0 u32) :abi-size (: 0 u32) :stack-off (: 0 u32)))
+                :align (: 1 u32) :bank (: 255 u8) :size (: 0 u32) :abi-size (: 0 u32) :mixed false :stack-off (: 0 u32)))
 
 ;;; AAPCS64 argument assignment, with Apple's variant (`apple`): stack arguments
 ;;; packed at their natural alignment, variadic arguments always on the stack in
@@ -227,6 +229,10 @@
    (leaf-tail-calls bool)
    (generated-call bool)
    (frame-used bool)
+   ; the function being compiled, and the label after its prologue: a self
+   ; tail call with its arguments in registers jumps there (a loop)
+   (cur-sym u32)
+   (body-label u32)
    (generating-branch bool)
    ; ---- labels
    (block-labels (ArrayList u32))
@@ -255,7 +261,14 @@
    (tail-stubs (ArrayList u64))
    (no-fixed bool)
    ; while moving values into a block's PHIs: that block (else NONE)
-   (phi-block-idx u32)])
+   (phi-block-idx u32)
+   ; a leaf with tail calls: the register the argument being assigned arrives
+   ; in, offered as its fixed register (else NO-REG)
+   (fixed-hint u8)
+   ; between term-begin! and term-end!: the fixed registers as the terminator
+   ; found them (see term-begin!)
+   (terminating bool)
+   (term-snap (ArrayList u64))])
 
 (impl [A] (Compiler A)
   (new [(ad (ptr A)) (a (ptr Asm)) (arch u8)] (-> (Compiler A))
@@ -278,6 +291,7 @@
       (set! (.ret-offs c) (ArrayList::new [u32] al))
       (set! (.veneers c) (ArrayList::new [u32] al))
       (set! (.tail-stubs c) (ArrayList::new [u64] al))
+      (set! (.term-snap c) (ArrayList::new [u64] al))
       (set! (.cc c) (cc-new true))
       (set! (.variable-ref-list c) (none))
       (set! (.phi-block-idx c) (none))
@@ -490,7 +504,11 @@
           (when (or (not (allow-fixed? ad value)) (and (.no-fixed c) (not (force-fixed? ad value))))
             (set! try false))
           (when try
-            (let [r (arch-select-fixed-reg c (p-bank (.p0 v)) (p-size (.p0 v)))]
+            (let [h (.fixed-hint c)
+                  r (if (and (!= h (no-reg)) (not (reg-used? c h))
+                             (!= (& (bank-regs bank) (bit h)) (: 0 u64)) (arch-fixed-ok? c h))
+                        h
+                        (arch-select-fixed-reg c (p-bank (.p0 v)) (p-size (.p0 v))))]
               (when (and (!= r (no-reg)) (not (reg-used? c r)))
                 (set! (.p0 v) (p-with (p-with (p-set-reg (.p0 v) r) (: 0x800 u16) true) (: 0x100 u16) true))
                 (mark-used! c r local (: 0 u32))
@@ -587,8 +605,26 @@
 (defn evict-reg-for-arg! [A] [(c (ptr (Compiler A))) (r u8)] (-> void)
   (let [local (reg-local c r)
         part (reg-part c r)]
-    (if (or (= local (none)) (reg-fixed? c r) (p-fixed? (ap c local part)))
+    (cond
+      (and (.terminating c) (!= local (none)) (p-fixed? (ap c local part)))
+        ; a terminator's: move the fixed value aside (term-end! puts it back)
+        (let [p (ap c local part)
+              all (: 0xFFFFFFFFFFFFFFFF u64)
+              free (& (& (.allocatable c) (^ (.used c) all)) (bank-regs (p-bank p)))
+              pref (& free (^ (arch-arg-regs c) all))
+              nr (if (!= pref (: 0 u64)) (ctz64 pref) (if (!= free (: 0 u64)) (ctz64 free) (no-reg)))]
+          (if (= nr (no-reg))
+              (evict-reg! c r)
+              (do (arch-mov! c nr r (p-size p))
+                  (unmark-used! c r)
+                  (unmark-fixed! c r)
+                  (mark-used! c nr local part)
+                  (mark-fixed! c nr)
+                  (mark-clobbered! c nr)
+                  (ap-set-reg! c local part nr))))
+      (or (= local (none)) (reg-fixed? c r) (p-fixed? (ap c local part)))
         (evict-reg! c r)
+      :else
         (let [p (ap c local part)
               all (: 0xFFFFFFFFFFFFFFFF u64)
               free (& (& (.allocatable c) (^ (.used c) all))
@@ -601,6 +637,45 @@
                 (mark-used! c nr local part)
                 (mark-clobbered! c nr)
                 (ap-set-reg! c local part nr)))))))
+
+;;; A terminator (a return or tail call, or a call then a return) may move or
+;;; spill fixed values to free the registers its operands go in; nothing after
+;;; it in the block uses them, and the blocks compiled next are reached from
+;;; elsewhere with the fixed values where they were. term-begin! records the
+;;; fixed registers (register, part descriptor, value, part); term-end!, after
+;;; the terminator, forgets what it left in registers and puts them back.
+(defn term-begin! [A] [(c (ptr (Compiler A)))] (-> void)
+  (clear! (mut (.term-snap c)))
+  (set! (.terminating c) true)
+  (let [(mut m) (.used c)]
+    (while (!= m (: 0 u64))
+      (let [r (ctz64 m)
+            local (reg-local c r)]
+        (set! m (& m (- m (: 1 u64))))
+        (when (and (reg-fixed? c r) (!= local (none)))
+          (let [part (reg-part c r)]
+            (push! (mut (.term-snap c))
+                   (| (| (<< (cast u64 local) (: 32 u64)) (<< (cast u64 part) (: 24 u64)))
+                      (| (<< (cast u64 (ap c local part)) (: 8 u64)) (cast u64 r))))))))))
+
+(defn term-end! [A] [(c (ptr (Compiler A)))] (-> void)
+  (set! (.terminating c) false)
+  (for r (range 0 64)
+    (let [rr (cast u8 r)]
+      (when (or (reg-used? c rr) (reg-fixed? c rr))
+        (unmark-used! c rr)
+        (unmark-fixed! c rr))))
+  (for i (range 0 (len (.term-snap c)))
+    (let [e (get (.term-snap c) i)
+          local (cast u32 (>> e (: 32 u64)))
+          part (cast u32 (& (>> e (: 24 u64)) (: 0xFF u64)))
+          desc (cast u16 (& (>> e (: 8 u64)) (: 0xFFFF u64)))
+          r (cast u8 (& e (: 0xFF u64)))]
+      ; not if the terminator was its last use
+      (when (va-live? (va-at c local))
+        (ap-set! c local part desc)
+        (mark-used! c r local part)
+        (mark-fixed! c r)))))
 
 (defn free-reg! [A] [(c (ptr (Compiler A))) (r u8)] (-> void)
   (let [local (reg-local c r) part (reg-part c r)]
@@ -910,7 +985,7 @@
           (mark-fixed! c r))
       (let [p (ap c (.local dst) (.part dst))]
         (if (p-fixed? p)
-            (do (arch-mov! c (p-reg p) r (p-size p))
+            (do (when (!= (p-reg p) r) (arch-mov! c (p-reg p) r (p-size p)))
                 (ap-set! c (.local dst) (.part dst) (p-with (p-with p (: 0x800 u16) true) (: 0x200 u16) true)))
             (do (mark-used! c r (.local dst) (.part dst))
                 (mark-clobbered! c r)
@@ -1581,7 +1656,9 @@
                 (vp-salvage! c (mut vp))
                 (evict-reg! c r))
             (when needs-ext (arch-intext! c r r ext-sign ext-bits (: 64 u32))))
-        (do (when (reg-used? c r) (evict-reg! c r))
+        (do (when (reg-used? c r)
+              ; a fixed value in a leaf with tail calls: moved aside (term-end!)
+              (if (and (.leaf-tail-calls c) (reg-fixed? c r)) (evict-reg-for-arg! c r) (evict-reg! c r)))
             (if (vp-can-salvage? c (cast (ptr ValuePart) (mut vp)))
                 (let [src (vp-salvage! c (mut vp))]
                   (if needs-ext (arch-intext! c r src ext-sign ext-bits (: 64 u32)) (arch-mov! c r src (.size cca))))
@@ -1661,6 +1738,8 @@
       (set! (.leaf-tail-calls c) (and (.is-leaf c) (cur-has-tail-calls? ad)))
       (set! (.generated-call c) false)
       (set! (.frame-used c) false)
+      (set! (.fixed-hint c) (no-reg))
+      (set! (.terminating c) false)
       (set! (.fixed-count-gp c) (: 0 u32))
       (set! (.fixed-count-fp c) (: 0 u32))
       (let [nvals (len (.liveness (.an c)))]
@@ -1688,6 +1767,9 @@
       (let [arg-regs (arch-arg-regs c)]
         (set! (.allocatable c) (& (.allocatable c) (^ arg-regs (: 0xFFFFFFFFFFFFFFFF u64))))
         (arch-prologue-begin! c)
+        (set! (.cur-sym c) sym)
+        (set! (.body-label c) (label-create! c))
+        (label-place! c (.body-label c))
         (for i (range 0 (i64-of (cur-arg-count ad)))
           (prologue-assign-arg! c (u32-of i) (cur-arg ad (u32-of i))))
         (arch-prologue-end! c)
@@ -1731,7 +1813,9 @@
 
 (defn prologue-assign-arg! [(A IRAdaptor IRCompiler)] [(c (ptr (Compiler A))) (idx u32) (arg u32)] (-> void)
   (let [ad (.ad c)
-        (mut vr) (result-ref! c arg)]
+        _ (set! (.fixed-hint c) (arg-reg-hint c idx arg))
+        (mut vr) (result-ref! c arg)
+        _ (set! (.fixed-hint c) (no-reg))]
     (cond
       (cur-arg-byval? ad idx)
         (let [(mut cca) (cca-new)]
@@ -1764,11 +1848,34 @@
               (set! (.size cca) (vp-size c (cast (ptr ValuePart) (mut vp))))
               (set! (.align cca) (if (and (= pi 0) (> count (: 1 u32))) (* (.size cca) count) (.size cca)))
               (set! (.abi-size cca) (arg-flags-size flags))
+              (set! (.mixed cca) (!= (& flags (: 0x1000 u32)) (: 0 u32)))
               (when (!= (& flags (: 0x80 u32)) (: 0 u32)) (set! (.int-ext cca) (: 0x80 u8)))
               (arch-assign-arg! c (mut cca))
               (arch-prologue-assign-arg-part! c (mut vp) (mut cca))
               (vp-reset! c (mut vp))))))
     (vr-reset! c (mut vr))))
+
+;;; In a leaf with tail calls, the register a single-part argument arrives in:
+;;; fixed there, a self tail call (a loop) needs no moves for it. The
+;;; assignment is worked out on a copy of the convention state.
+(defn arg-reg-hint [(A IRAdaptor IRCompiler)] [(c (ptr (Compiler A))) (idx u32) (arg u32)] (-> u8)
+  (let [ad (.ad c)]
+    (if (or (not (.leaf-tail-calls c)) (cur-arg-byval? ad idx) (cur-arg-sret? ad idx)
+            (!= (val-part-count ad arg) (: 1 u32)))
+        (no-reg)
+        (let [saved (.cc c)
+              flags (cur-arg-flags ad idx)
+              group (& (>> flags (: 16 u32)) (: 0xFF u32))
+              (mut cca) (cca-new)]
+          (set! (.consecutive cca) (cast u8 group))
+          (set! (.bank cca) (val-part-bank ad arg (: 0 u32)))
+          (set! (.size cca) (val-part-size ad arg (: 0 u32)))
+          (set! (.align cca) (.size cca))
+          (set! (.abi-size cca) (arg-flags-size flags))
+          (set! (.mixed cca) (!= (& flags (: 0x1000 u32)) (: 0 u32)))
+          (arch-assign-arg! c (mut cca))
+          (set! (.cc c) saved)
+          (.reg cca)))))
 
 (defn resolve-fixups! [A] [(c (ptr (Compiler A)))] (-> void)
   (for i (range 0 (len (.fixups c)))
@@ -1797,6 +1904,9 @@
 (defn arch-raw-jump! [A] [(c (ptr (Compiler A))) (j Jump) (label u32)] (-> void)
   (if (x64? c) (x64/raw-jump! c j label) (a64/raw-jump! c j label)))
 (defn arch-invert-jump [A] [(c (ptr (Compiler A))) (j Jump)] (-> Jump) (if (x64? c) (x64/invert-jump j) (a64/invert-jump j)))
+(defn arch-fixed-ok? [A] [(c (ptr (Compiler A))) (r u8)] (-> bool)
+  ; x86-64: rax, rcx and rdx are instructions' fixed operands (TPDE's mask)
+  (if (x64? c) (> r (: 2 u8)) true))
 (defn arch-select-fixed-reg [A] [(c (ptr (Compiler A))) (bank u8) (size u32)] (-> u8)
   (if (x64? c) (x64/select-fixed-reg c bank size) (a64/select-fixed-reg c bank size)))
 (defn fixed-limit [A] [(c (ptr (Compiler A))) (bank u8)] (-> u32)

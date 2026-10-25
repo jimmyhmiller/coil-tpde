@@ -26,12 +26,14 @@ the IR it compiles, and then the backend for the Coil compiler itself
 | Debug info | **None.** `-g` keeps selecting the arm64 backend. | Not part of the -O0 compile-time bar; TPDE emits only unwind info. |
 | Threads | **Two-stage pipeline**: the backend thread lowers function *i+1* while a second thread compiles function *i* (`codegen_tpde.coil`, "jobs"). A ring of 8 jobs with an atomic state per slot; both sides spin then yield. The compiling side touches only tpde state (the job's CIR, the Compiler, the assembler, whose symbol table is chunked and locked for adding). Jobs complete in order, so the object is identical to compiling serially (`COIL_TPDE_SERIAL=1`). | Serial tpde is ~10.3× LLVM -O0: at the bar but with no margin, and most of what is left is cache misses on the front end's AST. A condition-variable handoff cost more than it saved (a wakeup per function). |
 | Where does the tpde package live? | Its own repository (`coil-tpde`), a path dependency of the Coil workspace (`Coil.toml` `[dependencies] tpde`); `stage0.py` adds `../coil-tpde/src` as a namespace root for the bootstrap. | The package is generic and has its own tests; the compiler consumes it like any dependency. |
+| x86-64 | **System V, Mach-O x86-64 first** (`--target x86_64-apple-macosx…`, run under Rosetta on this host), with the same lowering: `codegen_tpde` classifies aggregates as `codegen_x64` does (eightbytes INTEGER/SSE, MEMORY above 16 bytes) and keeps the classes in `AbiInfo`'s spare fields. MEMORY arguments are `AF-BYVAL` (tpde copies them onto the stack, TPDE's byval); an sret function returns the pointer in rax; a pair split across a GP and an XMM register is `AF-MIXED`, so it goes to the stack whole when either bank runs out. The package's ELF writer serves TIR (checked against C++ TPDE's objects); Coil on Linux is untested (no Linux host). | The host is arm64 macOS, and Rosetta runs x86-64 Mach-O, so every Coil gate can run for x86-64 here. |
 | Tooling language | Coil (`src/tools/tpde_check.coil`, `src/tools/tpde_bench.coil`, shared helpers in `src/tools/proc.coil`). The only non-Coil scripts left build the C++ reference (`ref/build.sh`). | As asked. The Python `parity.py`/`gen_tir.py` and shell `check_enc.sh`/`norm_objdump.sh` were ported and removed. |
 
 ### Where we differ from TPDE
 
 All are heuristics; none changes what a program computes. `tpde-check codegen`
-reports where TIR output still matches the C++ reference (9/10 runs).
+reports where TIR output still matches the C++ reference (19/20 runs; the
+other differs in veneer placement).
 
 - **A displaced argument register moves, not spills.** When a call's argument
   needs a register that holds a live value, the value moves to a free register
@@ -44,7 +46,28 @@ reports where TIR output still matches the C++ reference (9/10 runs).
   On Apple cores the stack round trip was not just slow: reusing a value loaded
   before a store to the same slot cost 3× (measured with hand-written loops).
 - **Tail calls do not make a function non-leaf.** Nothing is live across one,
-  so a self-recursive function keeps caller-saved registers.
+  so a self-recursive function keeps caller-saved registers. In such a leaf a
+  fixed register is a caller-saved one no argument uses, then an argument
+  register, then a callee-saved one, and an argument may be fixed in the
+  register it arrives in. A return or tail call may then need a fixed
+  register for an operand: it moves the fixed value aside, and
+  `term-begin!`/`term-end!` put the compiler's register state back after the
+  terminator, since the blocks compiled next are reached from elsewhere with
+  the fixed values in place. (The first version spilled the displaced value,
+  and a later block read a slot only the tail call's block had written: the
+  self-host miscompile. The interim fix kept fixed values out of argument
+  registers, which cost two moves per iteration of a self-recursive loop.)
+- **A self tail call is a loop.** With its arguments in registers and no
+  dynamic alloca, a function's tail call to itself jumps back past its
+  prologue (`body-label`), reusing the frame, instead of an epilogue and a
+  jump to the entry.
+- **x86-64: a tail call needs no frame.** Only a real call (or a dynamic
+  alloca) makes a function set up rsp; a tail jump restores what the
+  prologue saved and jumps.
+- **x86-64: a single-use PTRADD is fused into its load or store**
+  (`[base + idx*scale + off]`), as TPDE's LLVM compiler fuses a GEP into its
+  memory user. The TIR has no address arithmetic, so the differential is
+  unaffected.
 - **CIR folds ADDI into load/store offsets and drops unused pure
   instructions** (`finish!`), and shares small integer constants per function.
 - **Narrow integer arguments carry their C size** (`AF-SIZE`, argument flags
@@ -101,12 +124,15 @@ src/tpde/codegen.coil     IRCompiler trait: value parts, constants, isel hook
 src/tpde/core.coil        CompilerBase: assignments, registers, spills, PHIs, calls
 src/tpde/a64.coil         arm64 layer: CC (AAPCS64/Apple), frames, branches, veneers
 src/tpde/a64/enc.coil     arm64 encoder
+src/tpde/x64.coil         x86-64 layer: CC (System V), frames, branches
+src/tpde/x64/enc.coil     x86-64 encoder
 src/tpde/asm.coil         sections, symbols, relocations
-src/tpde/macho.coil       Mach-O writer
+src/tpde/macho.coil       Mach-O writer (arm64, x86-64)
+src/tpde/elf.coil         ELF64 writer (x86-64)
 src/tpde/buf.coil         byte buffer
 src/tpde/tir/             TIR: parser/printer, adaptor, isel (the test IR)
 src/tpde/cir.coil         CIR builder (Braun SSA)
-src/tpde/cir/             CIR adaptor and arm64 isel
+src/tpde/cir/             CIR adaptor, arm64 and x86-64 isel
 src/tools/                tpde-test (C++ tpde_test's CLI), tpde-check, tpde-bench
 ```
 
@@ -155,6 +181,8 @@ each row.
   CompilerA64, Mach-O writer, Apple ABI; JIT execution tests and the C++ differential.
 - **M3** Coil: tree → SSA (Braun) lowering, adaptor, `--backend tpde`; corpus lane green.
 - **M4** Performance gates and self-host.
-- **M5** x86-64 ELF.
+- **M5** x86-64: encoder, System V layer, ELF and Mach-O writers, TIR and CIR
+  isel; Coil's `--backend tpde` for x86-64 Mach-O.
 
-Status (2026-10-25): M0–M4 done; every gate above is green (BENCH.md).
+Status (2026-10-25): M0–M5 done; every gate above is green on arm64 and, run
+under Rosetta, on x86-64 (BENCH.md).

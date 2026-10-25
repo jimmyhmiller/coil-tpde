@@ -1,0 +1,11 @@
+;;; 128-bit shifts by 64 or more: on x86-64 the fill word was made after the
+;;; `test cl, 64` its cmov reads, by a flag-setting `sar`.
+(module tests.i128-shift)
+(import "coil.io" :use *)
+(defn shl [(a i128) (n i128)] (-> i128) (<< a n))
+(defn shr [(a i128) (n i128)] (-> i128) (>> a n))
+(defn ushr [(a u128) (n u128)] (-> u128) (>> a n))
+(defn main [] (-> i32)
+  (println "{} {} {}" (shl 1 100) (shr (shl 1 100) 100) (shr (- 0 (shl 1 100)) 99))
+  (println "{} {} {}" (ushr (<< (: 3 u128) (: 120 u128)) (: 121 u128)) (shl 5 3) (shr (shl 7 70) 3))
+  0)

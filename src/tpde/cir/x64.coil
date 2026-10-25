@@ -665,21 +665,22 @@
       (e/mov-rr! t true x1 a1)
       (cond
         (= op cir/OP-SHL)
+          ; the fill (r11) is made before the test: a shift would change the flags
           (do (e/shld-cl! t x1 x0)
               (e/shift-cl! t e/SH-SHL true x0)
+              (e/mov-ri! t (b8 R11) 0)
               (e/test8-ri! t (b8 RCX) 64)
               (e/cmovcc! t e/CC-NE true x1 x0)
-              (e/mov-ri! t (b8 R11) 0)
               (e/cmovcc! t e/CC-NE true x0 (b8 R11)))
         :else
           (let [arith (= op cir/OP-ASHR)]
             (e/shrd-cl! t x0 x1)
             (e/shift-cl! t (if arith e/SH-SAR e/SH-SHR) true x1)
-            (e/test8-ri! t (b8 RCX) 64)
-            (e/cmovcc! t e/CC-NE true x0 x1)
             (if arith
                 (do (e/mov-rr! t true (b8 R11) x1) (e/shift-ri! t e/SH-SAR true (b8 R11) 63))
                 (e/mov-ri! t (b8 R11) 0))
+            (e/test8-ri! t (b8 RCX) 64)
+            (e/cmovcc! t e/CC-NE true x0 x1)
             (e/cmovcc! t e/CC-NE true x1 (b8 R11))))
       (let [d0 (core/vp-cur-reg-or-alloc! c (mut rlo))
             d1 (core/vp-cur-reg-or-alloc! c (mut rhi))]
@@ -932,34 +933,87 @@
 ; ============================ memory ========================================
 
 ;;; The address of pointer value `p`: a stack variable is rbp plus its slot.
-(defstruct Addr [(base u8) (off i64)])
+;; base + idx*scale + off; idx 255 for none
+(defstruct Addr [(base u8) (off i64) (idx u8) (scale u8)])
 
 (defn addr! [(c (ptr (Compiler Func))) (s (mut Single)) (off i64)] (-> Addr)
   (if (core/vp-stack-var? c (cast (ptr ValuePart) (mut (.vp s))))
-      (Addr :base (b8 RBP) :off (+ off (cast i64 (core/vp-stack-var-off c (cast (ptr ValuePart) (mut (.vp s)))))))
-      (Addr :base (reg! c (mut s)) :off off)))
+      (Addr :base (b8 RBP) :off (+ off (cast i64 (core/vp-stack-var-off c (cast (ptr ValuePart) (mut (.vp s))))))
+            :idx (b8 255) :scale (: 1 u8))
+      (Addr :base (reg! c (mut s)) :off off :idx (b8 255) :scale (: 1 u8))))
 
-;; A memory operand for `ad`, through r11 when the offset needs 64 bits.
+(defn addr-plus [(ad Addr) (o i64)] (-> Addr)
+  (Addr :base (.base ad) :off (+ (.off ad) o) :idx (.idx ad) :scale (.scale ad)))
+
+;; A memory operand for `ad`, through r11 when the offset needs 64 bits (a
+;; fused index's offset always fits).
 (defn mem-of [(c (ptr (Compiler Func))) (ad Addr)] (-> Mem)
-  (if (e/fits32? (.off ad))
-      (mem (.base ad) (.off ad))
-      (do (e/mov-ri! (tx c) (b8 R11) (.off ad))
-          (mem-idx (.base ad) (b8 R11) (: 1 u8) 0))))
+  (cond (!= (.idx ad) (b8 255)) (mem-idx (.base ad) (.idx ad) (.scale ad) (.off ad))
+        (e/fits32? (.off ad)) (mem (.base ad) (.off ad))
+        :else (do (e/mov-ri! (tx c) (b8 R11) (.off ad))
+                  (mem-idx (.base ad) (b8 R11) (: 1 u8) 0))))
+
+;;; Fold a PTRADD into the load or store using it, as TPDE fuses a GEP into
+;;; its single memory user: `mov rax, [base + 8*idx + off]` rather than a lea
+;;; before it. The PTRADD must have that one use, in the same block (its
+;;; operands are then live up to the access), a scale the addressing mode has
+;;; and an offset that fits with the access's (and its second word's).
+(defn fuse-addresses! [(c (ptr (Compiler Func)))] (-> void)
+  (let [f (fn-of c)]
+    (for b (range 0 (len (.blocks f)))
+      (let [bb (load (cir/blk f (cast u32 b)))]
+        (for k (range (cast i64 (.ibegin bb)) (cast i64 (.iend bb)))
+          (let [i (get (.insts f) k)
+                x (cir/val f i)
+                op (cast i64 (.op x))]
+            (cond
+              (= op cir/OP-PTRADD) (set! (.flags x) (| (.flags x) (: 16 u8)))
+              (or (= op cir/OP-LOAD) (= op cir/OP-STORE))
+                (let [a (cir/operand f x (: 0 u32))
+                      ax (cir/val f a)
+                      sc (.imm ax)
+                      off (+ (.imm2 ax) (.imm x))]
+                  (when (and (= (cast i64 (.op ax)) cir/OP-PTRADD)
+                             (!= (& (.flags ax) (: 16 u8)) (: 0 u8))
+                             (or (= sc 1) (= sc 2) (= sc 4) (= sc 8))
+                             (e/fits32? off) (e/fits32? (+ off 8))
+                             (= (.ref-count (load (core/liveness c a))) (: 2 u32)))
+                    (set! (.flags ax) (| (.flags ax) (: 1 u8)))))
+              :else 0)))
+        (for k (range (cast i64 (.ibegin bb)) (cast i64 (.iend bb)))
+          (let [x (cir/val f (get (.insts f) k))]
+            (set! (.flags x) (& (.flags x) (: 0xEF u8)))))))))
+
+(defn fused-ptradd? [(c (ptr (Compiler Func))) (v u32)] (-> bool)
+  (and (= (op-of c v) cir/OP-PTRADD) (!= (& (.flags (vx c v)) (: 1 u8)) (: 0 u8))))
 
 (defn load-op! [(c (ptr (Compiler Func))) (inst u32)] (-> bool)
+  (let [a (opv c inst (: 0 u32))
+        off (.imm (vx c inst))]
+    (if (fused-ptradd? c a)
+        (let [(mut sp) (use! c (opv c a (: 0 u32)))
+              (mut si) (use! c (opv c a (: 1 u32)))
+              ad (addr! c (mut sp) (+ off (.imm2 (vx c a))))]
+          (load-at! c inst (Addr :base (.base ad) :off (.off ad) :idx (reg! c (mut si)) :scale (b8 (.imm (vx c a)))) (mut sp))
+          (done! c (mut si))
+          (done! c (mut sp)))
+        (let [(mut sp) (use! c a)]
+          (load-at! c inst (addr! c (mut sp) off) (mut sp))
+          (done! c (mut sp))))
+    true))
+
+(defn load-at! [(c (ptr (Compiler Func))) (inst u32) (ad Addr) (sp (mut Single))] (-> void)
   (let [x (load (vx c inst))
         bytes (& (.imm2 x) 255)
         signed (!= (& (.imm2 x) 256) 0)
-        t (cast i64 (.ty x))
-        (mut sp) (use! c (opv c inst (: 0 u32)))
-        ad (addr! c (mut sp) (.imm x))]
+        t (cast i64 (.ty x))]
     (if (= t cir/T-I128)
         (let [(mut vr) (core/result-ref! c inst)
               (mut lo) (core/vr-part c (cast (ptr ValueRef) (mut vr)) (: 0 u32))
               (mut hi) (core/vr-part c (cast (ptr ValueRef) (mut vr)) (: 1 u32))
               d0 (core/vp-cur-reg-or-alloc! c (mut lo))
               d1 (core/vp-cur-reg-or-alloc! c (mut hi))]
-          (e/load-m! (tx c) d1 (mem-of c (Addr :base (.base ad) :off (+ (.off ad) 8))) 8 false)
+          (e/load-m! (tx c) d1 (mem-of c (addr-plus ad 8)) 8 false)
           (e/load-m! (tx c) d0 (mem-of c ad) 8 false)
           (core/vp-set-modified! c (cast (ptr ValuePart) (mut lo)))
           (core/vp-set-modified! c (cast (ptr ValuePart) (mut hi)))
@@ -974,17 +1028,28 @@
               (e/sse-load! (tx c) dr (mem-of c ad) bytes)
               (e/load-m! (tx c) dr (mem-of c ad) bytes signed))
           (modified! c (mut res))
-          (done! c (mut res))))
-    (done! c (mut sp))
-    true))
+          (done! c (mut res))))))
 
 (defn store-op! [(c (ptr (Compiler Func))) (inst u32)] (-> bool)
+  (let [a (opv c inst (: 0 u32))
+        off (.imm (vx c inst))]
+    (if (fused-ptradd? c a)
+        (let [(mut sp) (use! c (opv c a (: 0 u32)))
+              (mut si) (use! c (opv c a (: 1 u32)))
+              ad (addr! c (mut sp) (+ off (.imm2 (vx c a))))]
+          (store-at! c inst (Addr :base (.base ad) :off (.off ad) :idx (reg! c (mut si)) :scale (b8 (.imm (vx c a)))))
+          (done! c (mut si))
+          (done! c (mut sp)))
+        (let [(mut sp) (use! c a)]
+          (store-at! c inst (addr! c (mut sp) off))
+          (done! c (mut sp))))
+    true))
+
+(defn store-at! [(c (ptr (Compiler Func))) (inst u32) (ad Addr)] (-> void)
   (let [x (load (vx c inst))
         bytes (& (.imm2 x) 255)
         v (opv c inst (: 1 u32))
-        t (ty-of c v)
-        (mut sp) (use! c (opv c inst (: 0 u32)))
-        ad (addr! c (mut sp) (.imm x))]
+        t (ty-of c v)]
     (cond
       (= t cir/T-I128)
         (let [(mut vr) (core/val-ref! c v)
@@ -993,7 +1058,7 @@
               r0 (core/vp-cur-reg-or-load! c (mut lo))
               r1 (core/vp-cur-reg-or-load! c (mut hi))]
           (e/store-m! (tx c) (mem-of c ad) r0 8)
-          (e/store-m! (tx c) (mem-of c (Addr :base (.base ad) :off (+ (.off ad) 8))) r1 8)
+          (e/store-m! (tx c) (mem-of c (addr-plus ad 8)) r1 8)
           (core/vp-reset! c (mut hi))
           (core/vp-reset! c (mut lo))
           (core/vr-reset! c (mut vr)))
@@ -1007,9 +1072,7 @@
           (if (fp-ty? t)
               (e/sse-store! (tx c) (mem-of c ad) vr bytes)
               (e/store-m! (tx c) (mem-of c ad) vr bytes))
-          (done! c (mut sv))))
-    (done! c (mut sp))
-    true))
+          (done! c (mut sv))))))
 
 (defn addi! [(c (ptr (Compiler Func))) (inst u32)] (-> bool)
   (let [off (.imm (vx c inst))
@@ -1053,14 +1116,24 @@
     (done! c (mut sp))
     true))
 
-;; Inline copy of `n` bytes, through r11.
+;; Inline copy of `n` bytes: 16 at a time through an XMM scratch register,
+;; the rest through r11 (LLVM's movups copies; 8-byte ones were a third of
+;; the text).
 (defn copy-bytes! [(c (ptr (Compiler Func))) (d Addr) (s Addr) (n i64)] (-> void)
   (let [(mut o) 0
         t (tx c)]
+    (when (>= n 16)
+      (let [(mut sx) (core/scratch-new)
+            xr (core/scratch-alloc! c (mut sx) (: 1 u8))]
+        (while (>= (- n o) 16)
+          (e/sse-load! t xr (mem-of c (addr-plus s o)) 16)
+          (e/sse-store! t (mem-of c (addr-plus d o)) xr 16)
+          (set! o (+ o 16)))
+        (core/scratch-reset! c (mut sx))))
     (for chunk [8 4 2 1]
       (while (>= (- n o) chunk)
-        (e/load-m! t (b8 R11) (mem-of c (Addr :base (.base s) :off (+ (.off s) o))) chunk false)
-        (e/store-m! t (mem-of c (Addr :base (.base d) :off (+ (.off d) o))) (b8 R11) chunk)
+        (e/load-m! t (b8 R11) (mem-of c (addr-plus s o)) chunk false)
+        (e/store-m! t (mem-of c (addr-plus d o)) (b8 R11) chunk)
         (set! o (+ o chunk))))))
 
 (const INLINE-COPY-MAX 128)
@@ -1085,9 +1158,18 @@
         (let [(mut sd) (use! c (opv c inst (: 0 u32)))
               d (addr! c (mut sd) 0)
               (mut o) 0]
+          ; 16 bytes at a time from a zeroed XMM register
+          (when (>= n 16)
+            (let [(mut sx) (core/scratch-new)
+                  xr (core/scratch-alloc! c (mut sx) (: 1 u8))]
+              (e/sse-rr! (tx c) 0 false 0x0F57 xr xr)  ; xorps
+              (while (>= (- n o) 16)
+                (e/sse-store! (tx c) (mem-of c (addr-plus d o)) xr 16)
+                (set! o (+ o 16)))
+              (core/scratch-reset! c (mut sx))))
           (for chunk [8 4 2 1]
             (while (>= (- n o) chunk)
-              (e/store-mi! (tx c) (mem-of c (Addr :base (.base d) :off (+ (.off d) o))) 0 chunk)
+              (e/store-mi! (tx c) (mem-of c (addr-plus d o)) 0 chunk)
               (set! o (+ o chunk))))
           (done! c (mut sd))
           true))))
@@ -1267,7 +1349,8 @@
       (let [v (cir/operand f (vx c inst) (cast u32 i))
             flags (get (.argflags f) (+ (cast i64 (.opb x)) i))
             t (ty-of c v)]
-        (when (!= (& flags (: 0x300 u32)) (: 0 u32)) (set! ok false))
+        ; sret, variadic or byval
+        (when (!= (& flags (: 0xB00 u32)) (: 0 u32)) (set! ok false))
         (cond (fp-ty? t) (set! fp (+ fp 1))
               (= t cir/T-I128) (set! gp (+ gp 2))
               :else (set! gp (+ gp 1)))
@@ -1288,7 +1371,10 @@
         (if (>= target 0)
             (let [regs (add-args! c inst (: 0 u32))]
               (core/tail-call-prepare! c)
-              (x64/tail-jump! c (cast u32 target)))
+              ; to itself: a jump back past the prologue, the frame reused
+              (if (and (= (cast u32 target) (.cur-sym c)) (not (.has-dynamic-alloca c)))
+                  (x64/raw-jump! c (core/jmp) (.body-label c))
+                  (x64/tail-jump! c (cast u32 target))))
             (let [(mut tv) (core/val-ref! c (opv c inst (: 0 u32)))
                   (mut tp) (core/vr-part c (cast (ptr ValueRef) (mut tv)) (: 0 u32))
                   regs (add-args! c inst (: 1 u32))]
@@ -1303,6 +1389,63 @@
               (core/vr-reset! c (mut vr)))))
         (core/release-regs-after-return! c)
         true)))
+
+;;; A call with a :shim convention (the arm64 shimcall!, in x86-64 terms): the
+;;; arguments in the convention's registers, the clobbered registers evicted
+;;; (fixed ones and rbp pushed around it), then a call to the trampoline or the
+;;; inlined machine code. The pushes are kept even so that rsp stays 16-byte
+;;; aligned for the callee.
+(defn shimcall! [(c (ptr (Compiler Func))) (inst u32)] (-> bool)
+  (let [f (fn-of c)
+        x (load (vx c inst))
+        clob (cast u64 (.imm2 x))
+        ret (.aux x)
+        (mut argmask) (: 0 u64)]
+    (for i (range 0 (cast i64 (.nops x)))
+      (let [v (cir/operand f (vx c inst) (cast u32 i))
+            r (cast u8 (get (.argflags f) (+ (cast i64 (.opb x)) i)))
+            (mut vr) (core/val-ref! c v)
+            (mut vp) (core/vr-part c (cast (ptr ValueRef) (mut vr)) (: 0 u32))]
+        (when (core/reg-fixed? c r) (core/fatal "a :shim argument register holds a fixed value"))
+        (if (and (core/vp-in-reg? c (cast (ptr ValuePart) (mut vp)) r) (core/vp-can-salvage? c (cast (ptr ValuePart) (mut vp))))
+            (core/vp-salvage! c (mut vp))
+            (do (when (core/reg-used? c r) (core/evict-reg! c r))
+                (core/vp-reload-into! c (mut vp) r (: 8 u32))))
+        (core/vp-reset! c (mut vp))
+        (core/vr-reset! c (mut vr))
+        (core/mark-clobbered! c r)
+        (set! (.allocatable c) (& (.allocatable c) (^ (core/bit r) (: 0xFFFFFFFFFFFFFFFF u64))))
+        (set! argmask (| argmask (core/bit r)))))
+    (let [kill (| clob (if (!= ret (: 255 u8)) (core/bit ret) (: 0 u64)))
+          (mut saves) (ArrayList::new [u8] (malloc-allocator))]
+      (let [(mut m) (& (& (.used c) kill) (^ argmask (: 0xFFFFFFFFFFFFFFFF u64)))]
+        (while (!= m (: 0 u64))
+          (let [r (core/ctz64 m)]
+            (set! m (& m (- m (: 1 u64))))
+            (if (core/reg-fixed? c r)
+                (push! (mut saves) r)
+                (core/evict-reg! c r)))))
+      (when (!= (& clob (core/bit (b8 x64/RBP))) (: 0 u64)) (push! (mut saves) (b8 x64/RBP)))
+      (let [pad (= (% (len saves) 2) 1)]
+        (for i (range 0 (len saves)) (e/push! (tx c) (get saves i)))
+        (when pad (e/alu-ri! (tx c) e/ALU-SUB true (b8 x64/RSP) 8))
+        (if (>= (.imm x) 0)
+            (do (set! (.generated-call c) true)
+                (asm/reloc! (.asm c) asm/SEC-TEXT (+ (cast i64 (core/text-off c)) 1) (cast u32 (.imm x)) asm/R-PLT32 0)
+                (e/call32! (tx c) 0))
+            (for k (range (cast i64 (.block x)) (+ (cast i64 (.block x)) (cast i64 (.next x))))
+              (buf/emit8! (tx c) (get (.bytes f) k))))
+        (when pad (e/alu-ri! (tx c) e/ALU-ADD true (b8 x64/RSP) 8))
+        (let [(mut i) (- (len saves) 1)]
+          (while (>= i 0) (e/pop! (tx c) (get saves i)) (set! i (- i 1)))))
+      (set! (.clobbered c) (| (.clobbered c) kill))
+      (free! (mut saves)))
+    (set! (.allocatable c) (| (.allocatable c) argmask))
+    (when (!= (cast i64 (.ty x)) cir/T-VOID)
+      (let [(mut res) (def! c inst)]
+        (core/vp-set-value-reg! c (mut (.vp res)) ret)
+        (done! c (mut res))))
+    true))
 
 ;;; A call to a runtime function with the instruction's operands as arguments
 ;;; and its result (if any) as the result. MEMCPY/MEMZERO pass their size too.
@@ -1417,9 +1560,9 @@
       (= op cir/OP-ATOMIC-STORE) (atomic-store! c inst)
       (= op cir/OP-FENCE) (do (e/mfence! (tx c)) true)
       (= op cir/OP-CALL) (call! c inst)
-      (= op cir/OP-TAILCALL) (tailcall! c inst)
-      (= op cir/OP-SHIMCALL) (do (eprintln "tpde: :shim conventions are arm64 only") false)
-      (= op cir/OP-RET) (a64isel/ret! c inst)
+      (= op cir/OP-TAILCALL) (do (core/term-begin! c) (let [ok (tailcall! c inst)] (core/term-end! c) ok))
+      (= op cir/OP-SHIMCALL) (shimcall! c inst)
+      (= op cir/OP-RET) (do (core/term-begin! c) (let [ok (a64isel/ret! c inst)] (core/term-end! c) ok))
       (= op cir/OP-BR) (do (core/generate-uncond-branch! c (block-target c inst (: 0 u32))) true)
       (= op cir/OP-CONDBR) (condbr! c inst)
       (= op cir/OP-SWITCH) (switch! c inst)

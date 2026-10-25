@@ -325,14 +325,18 @@
 (defn select-fixed-reg [A] [(c (ptr (Compiler A))) (bank u8) (size u32)] (-> u8)
   (if (and (= bank (: 1 u8)) (> size (: 8 u32)))
       (core/no-reg)
-      (let [mask (& (core/bank-regs bank)
-                    (^ (if (.leaf-tail-calls c) (arg-regs) (| (bit 0) (bit 1))) (: 0xFFFFFFFFFFFFFFFF u64)))
-            free (& (.allocatable c) (^ (.used c) (: 0xFFFFFFFFFFFFFFFF u64)))
+      (let [all (: 0xFFFFFFFFFFFFFFFF u64)
+            mask (& (core/bank-regs bank) (^ (if (.leaf-tail-calls c) (: 0 u64) (| (bit 0) (bit 1))) all))
+            free (& (.allocatable c) (^ (.used c) all))
             csr (callee-saved)
-            possible (if (not (.is-leaf c))
-                         (& (& free csr) mask)
-                         (let [p (& (& free (^ csr (: 0xFFFFFFFFFFFFFFFF u64))) mask)]
-                           (if (!= p (: 0 u64)) p (& (& free csr) mask))))]
+            ; a leaf with tail calls: caller-saved registers no argument uses,
+            ; then argument registers (a terminator moves them aside, see
+            ; core/term-begin!), then callee-saved ones
+            p0 (if (.leaf-tail-calls c) (& (& (& free (^ csr all)) mask) (^ (arg-regs) all)) (: 0 u64))
+            possible (cond (not (.is-leaf c)) (& (& free csr) mask)
+                           (!= p0 (: 0 u64)) p0
+                           :else (let [p (& (& free (^ csr all)) mask)]
+                                   (if (!= p (: 0 u64)) p (& (& free csr) mask))))]
         (if (= possible (: 0 u64)) (core/no-reg) (cast u8 (primitive/ctz possible))))))
 
 ; ============================ prologue / epilogue ===========================

@@ -111,6 +111,15 @@
 (const AF-SRET 0x100)
 (const AF-VARIADIC 0x200)
 (const AF-ZEXT 0x400)
+;; a copy of the pointed-to aggregate goes on the stack (System V MEMORY
+;; class); its size is in bits 12..31 (the other flag fields do not apply)
+(const AF-BYVAL 0x800)
+(defn af-byval [(size i64)] (-> u32) (| (: 0x800 u32) (<< (cast u32 size) (: 12 u32))))
+(defn af-byval-size [(flags u32)] (-> u32) (>> flags (: 12 u32)))
+(defn af-byval? [(flags u32)] (-> bool) (!= (& flags (: 0x800 u32)) (: 0 u32)))
+;; System V: this part and the next (a group of two) are in different register
+;; banks, one GP and one XMM; both must be free or both go on the stack
+(const AF-MIXED 0x1000)
 ;; bits 24..26: log2 of an integer argument's C size plus one (Apple lays
 ;; stack arguments out at that size); 0 for the part's own size
 (defn af-size [(bytes i64)] (-> u32)
