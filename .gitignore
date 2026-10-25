@@ -1,2 +1,8 @@
 .DS_Store
 .claude/settings.local.json
+/build
+/.coil
+/ref/build
+/ref/venv
+/ref/sanity
+__pycache__/

@@ -1,0 +1,4 @@
+[package]
+name = "tpde"
+entry = "src/tools/tpde_test.coil"
+source-roots = ["src"]
