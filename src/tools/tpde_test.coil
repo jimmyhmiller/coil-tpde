@@ -9,6 +9,10 @@
 (import "tpde.tir.ir" :as tir :use [Tir])
 (import "tpde.tir.adaptor" :use [TirAdaptor])
 (import "tpde.analyzer" :as analyzer :use [Analyzer])
+(import "tpde.tir.cg" :as tircg)
+(import "tpde.asm" :as asm :use [Asm])
+(import "tpde.macho" :as macho)
+(import "tpde.buf" :as buf :use [Buf])
 
 (const RUN-IR 0)
 (const RUN-ANALYZER 1)
@@ -111,4 +115,20 @@
               (.print-ir o) (do (tir/print-ir irp) 0)
               (= (.run-until o) RUN-IR) 0
               (= (.run-until o) RUN-ANALYZER) (run-analyzer irp o)
-              :else (do (eprintln "codegen is not implemented yet") 1))))))))
+              :else (run-codegen irp o))))))))
+
+(defn run-codegen [(ir (ptr Tir)) (o Options)] (-> i64)
+  (if (not (or (= (.arch o) "a64") (= (.arch o) "aarch64") (= (.arch o) "arm64")))
+      (do (eprintln "only --target=aarch64 is implemented") 1)
+      (let [(mut a) (Asm::new)
+            ap (cast (ptr Asm) (mut a))]
+        (if (not (tircg/compile-module! ir ap (.no-fixed o)))
+            (do (eprintln "Failed to compile IR") 1)
+            (let [(mut out) (Buf::new)
+                  op (cast (ptr Buf) (mut out))]
+              (macho/write-object! ap op)
+              (if (or (empty? (.out o)) (= (.out o) "-"))
+                  (do (io/write-all (io/stdout) (cast (ptr i8) (.data out)) (.len out)) 0)
+                  (match (fs/write-file (malloc-allocator) (.out o) (buf/as-slice op))
+                    (Ok [_] 0)
+                    (Err [_] (eprintln "Failed to open output file") 1))))))))
