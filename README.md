@@ -22,6 +22,19 @@ build/bin/coil-candidate run hello.coil --backend tpde
 build/bin/coil-candidate emit-obj hello.coil -o hello.o --backend tpde
 ```
 
+As a JIT for your own IR (see `tpde.jit` in [docs/PLAN.md](docs/PLAN.md#jit)):
+
+```coil
+(match (jit/jit-load asm false (jit/no-resolver))   ; arm64; true for x86-64
+  (Ok [image] (let [(mut img) image
+                    f (primitive/cast (fnptr (cc/C) [i64] i64)
+                                      (jit/jit-find (cast (ptr JitImage) (mut img)) asm "f"))]
+                (call-ptr f 41)))
+  (Err [msg] ...))
+```
+
+Coil's REPL can compile with it: `coil repl --backend tpde`.
+
 Package tools, built with any Coil compiler from this directory:
 
 ```sh

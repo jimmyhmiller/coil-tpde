@@ -1,0 +1,127 @@
+; SPDX-FileCopyrightText: 2026 Jimmy Miller
+; SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+;;; tpde.jit end to end: compile tests/tir/exec1.tir in this process, load it
+;;; with jit-load and call it (the checks of tests/tir/exec1.c). The argument
+;;; names the architecture this program was built for (arm64, or x86_64 run
+;;; under Rosetta), which is the code it compiles. Prints "ok".
+(module tests.jit-test)
+(import "coil.alloc" :use [malloc-allocator])
+(import "coil.args" :as args)
+(import "coil.fs" :as fs)
+(import "coil.cc" :as cc)
+(import "coil.primitive" :as primitive)
+(import "tpde.tir.ir" :as tir :use [Tir])
+(import "tpde.tir.cg" :as tircg)
+(import "tpde.asm" :as asm :use [Asm])
+(import "tpde.core" :as core)
+(import "tpde.jit" :as jit :use [JitImage])
+
+(defn pressure-ref [(a i64) (b i64)] (-> i64)
+  (let [(mut v) (zeroed (array i64 33))
+        (mut w) (zeroed (array i64 32))]
+    (set! (mut v) 1 (+ a b))
+    (set! (mut v) 2 (+ (get v 1) a))
+    (set! (mut v) 3 (+ (get v 2) b))
+    (for i (range 4 33) (set! (mut v) i (+ (get v (- i 1)) (get v (- i 3)))))
+    (set! (mut w) 1 (+ (get v 1) (get v 32)))
+    (for i (range 2 32) (set! (mut w) i (+ (get w (- i 1)) (get v i))))
+    (get w 31)))
+
+(defn f2 [(img (ptr JitImage)) (a (ptr Asm)) (name (slice u8))] (-> (fnptr (cc/C) [i64 i64] i64))
+  (primitive/cast (fnptr (cc/C) [i64 i64] i64) (jit/jit-find img a name)))
+
+(defn check [(what (slice u8)) (got i64) (want i64)] (-> i64)
+  (if (= got want) 0 (do (println "FAIL {} = {} want {}" what got want) 1)))
+
+(defn run [(x64 bool) (text (slice u8))] (-> i64)
+  (let [(mut ir) (Tir::new)
+        irp (cast (ptr Tir) (mut ir))
+        (mut a) (Asm::new)
+        ap (cast (ptr Asm) (mut a))]
+    (cond
+      (not (tir/parse-ir! irp text)) (do (println "FAIL parse") 1)
+      (not (tircg/compile-module! irp ap false (if x64 core/ARCH-X64 core/ARCH-A64))) (do (println "FAIL compile") 1)
+      :else
+        (match (jit/jit-load ap x64 (jit/no-resolver))
+          (Err [msg] (do (println "FAIL load: {}" msg) 1))
+          (Ok [image]
+              (let [(mut img) image
+                    ip (cast (ptr JitImage) (mut img))
+                    sum (f2 ip ap "sum")
+                    callmany (f2 ip ap "callmany")
+                    pressure (f2 ip ap "pressure")
+                    swapper (primitive/cast (fnptr (cc/C) [i64 i64 i64 i64] i64) (jit/jit-find ip ap "swapper"))
+                    manyargs (primitive/cast (fnptr (cc/C) [i64 i64 i64 i64 i64 i64 i64 i64 i64 i64 i64] i64)
+                                             (jit/jit-find ip ap "manyargs"))
+                    (mut bad) 0]
+                (set! bad (+ bad (check "sum(10, 1)" (call-ptr sum 10 1) 55)))
+                (set! bad (+ bad (check "sum(1000, 1)" (call-ptr sum 1000 1) 500500)))
+                (set! bad (+ bad (check "callmany(3, 4)" (call-ptr callmany 3 4) 11)))
+                (set! bad (+ bad (check "pressure(1, 2)" (call-ptr pressure 1 2) (pressure-ref 1 2))))
+                (set! bad (+ bad (check "pressure(-7, 3)" (call-ptr pressure (- 0 7) 3) (pressure-ref (- 0 7) 3))))
+                (set! bad (+ bad (check "swapper(5, 9, 0, 1)" (call-ptr swapper 5 9 0 1) (- 0 4))))
+                (set! bad (+ bad (check "swapper(5, 9, 7, 1)" (call-ptr swapper 5 9 7 1) 4)))
+                (set! bad (+ bad (check "manyargs(1..11)" (call-ptr manyargs 1 2 3 4 5 6 7 8 9 10 11) 6)))
+                (jit/jit-free! ip)
+                (asm/asm-free! ap)
+                bad))))))
+
+;; Calls out of the image: to libc (found by dlsym) and to a function the
+;; client's resolver supplies, both through branch stubs.
+(def EXTERN-TIR "declare @labs(%a)
+declare @plus100(%a)
+
+uselabs(%a) {
+entry:
+  %r = call @labs, %a
+  ret %r
+}
+
+useresolved(%a) {
+entry:
+  %r = call @plus100, %a
+  %s = call @plus100, %r
+  ret %s
+}
+")
+
+(defn plus100 :cc (cc/C) [(x i64)] (-> i64) (+ x 100))
+
+(defn resolve :cc (cc/C) [(ctx (ptr i8)) (name (ptr u8)) (n i64)] (-> (ptr u8))
+  (if (and (= n 7) (= (load (primitive/index name 0)) (: 112 u8)))  ; "plus100"
+      (primitive/cast (ptr u8) (fnptr-of plus100))
+      (primitive/cast (ptr u8) 0)))
+
+(defn run-extern [(x64 bool)] (-> i64)
+  (let [(mut ir) (Tir::new)
+        irp (cast (ptr Tir) (mut ir))
+        (mut a) (Asm::new)
+        ap (cast (ptr Asm) (mut a))]
+    (cond
+      (not (tir/parse-ir! irp EXTERN-TIR)) (do (println "FAIL parse (extern)") 1)
+      (not (tircg/compile-module! irp ap false (if x64 core/ARCH-X64 core/ARCH-A64))) (do (println "FAIL compile (extern)") 1)
+      :else
+        (match (jit/jit-load ap x64 (jit/resolver (fnptr-of resolve) (primitive/cast (ptr i8) 0)))
+          (Err [msg] (do (println "FAIL load (extern): {}" msg) 1))
+          (Ok [image]
+              (let [(mut img) image
+                    ip (cast (ptr JitImage) (mut img))
+                    bad (+ (check "uselabs(-42)" (call-ptr (f1 ip ap "uselabs") (- 0 42)) 42)
+                           (check "useresolved(1)" (call-ptr (f1 ip ap "useresolved") 1) 201))]
+                (jit/jit-free! ip)
+                (asm/asm-free! ap)
+                bad))))))
+
+(defn f1 [(img (ptr JitImage)) (a (ptr Asm)) (name (slice u8))] (-> (fnptr (cc/C) [i64] i64))
+  (primitive/cast (fnptr (cc/C) [i64] i64) (jit/jit-find img a name)))
+
+(defn main [(argc i32) (argv (ptr (ptr i8)))] (-> i64)
+  (args/init! argc argv)
+  (let [x64 (and (> (args/count) 1) (= (args/nth 1) "x86_64"))]
+    (match (fs/read-file (malloc-allocator) "tests/tir/exec1.tir")
+      (Err [_] (do (println "FAIL cannot read tests/tir/exec1.tir") 1))
+      (Ok [text]
+          ; twice: a second image in the same process
+          (let [bad (+ (+ (run x64 text) (run x64 text)) (run-extern x64))]
+            (when (= bad 0) (println "ok"))
+            bad)))))

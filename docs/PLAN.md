@@ -133,12 +133,33 @@ src/tpde/x64/enc.coil     x86-64 encoder
 src/tpde/asm.coil         sections, symbols, relocations
 src/tpde/macho.coil       Mach-O writer (arm64, x86-64)
 src/tpde/elf.coil         ELF64 writer (x86-64)
+src/tpde/jit.coil         in-process loader: an Asm into executable memory
 src/tpde/buf.coil         byte buffer
 src/tpde/tir/             TIR: parser/printer, adaptor, isel (the test IR)
 src/tpde/cir.coil         CIR builder (Braun SSA)
 src/tpde/cir/             CIR adaptor, arm64 and x86-64 isel
 src/tools/                tpde-test (C++ tpde_test's CLI), tpde-check, tpde-bench
 ```
+
+### JIT
+
+`tpde.jit` loads a compiled `Asm` into this process without an object file:
+`(jit-load asm x64? resolver)` gives a `JitImage`, `(jit-find img asm "f")` a
+function's address, `(jit-free! img)` unmaps it. Text and branch stubs are one
+mapping, made read-execute (W^X) after relocation with the instruction cache
+flushed; data sections and the GOT follow on their own page, read-write. Every
+relocation the arm64 and x86-64 layers emit is applied: arm64 `BRANCH26`
+(through a stub when the target is outside the image),
+`PAGE21`/`PAGEOFF12` and their GOT forms, `ABS64`; x86-64 `PC32`/`PLT32`
+(stubbed), `GOTPCREL` and `ABS64`/`ABS32`. An undefined symbol is asked of the
+client's resolver (`(resolver f ctx)`, `f : (ctx name len) -> address or null`),
+then `dlsym`; one neither knows fails the load. `tests/jit_test.coil` (run by
+`tpde-check exec`) compiles and runs TIR in-process on both architectures, with
+calls out to libc and to a resolver-supplied function.
+
+Coil's own JIT (`coil repl --backend tpde`, `coil.jit`'s `Tpde` backend) uses
+tpde for code generation but loads through Coil's Mach-O loader, which keeps the
+REPL's generations, symbol tables and reclamation.
 
 The Coil side is `../coil/src/compiler/codegen_tpde.coil` (lowering, module,
 pipeline) and `codegen_tpde_ir.coil` (the `llvm-ir` escape-hatch subset).

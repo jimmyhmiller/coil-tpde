@@ -19,7 +19,9 @@
 ;;;       must disassemble with llvm-mc to the text written beside it.
 ;;;   tpde-check exec
 ;;;       Every tests/tir/NAME.tir with a NAME.c driver, compiled, linked and
-;;;       run; and tests/cir_test.coil (the CIR builder) with tests/cir_test.c.
+;;;       run; tests/cir_test.coil (the CIR builder) with tests/cir_test.c; and
+;;;       tests/jit_test.coil, which compiles TIR and runs it in its own process
+;;;       through tpde.jit (arm64, and x86-64 under Rosetta).
 ;;;   tpde-check all
 ;;;       parity --fuzz 500, codegen, enc and exec.
 ;;;   tpde-check gen random [--seed S] [--funcs N] [--blocks B]
@@ -631,6 +633,24 @@
 
 ;;; tests/cir_test.coil builds CIR functions with the builder (Braun SSA) and
 ;;; compiles them to build/cir_test.o; tests/cir_test.c calls and checks them.
+;;; tests/jit_test.coil compiles TIR in its own process and runs it through
+;;; tpde.jit: built for arm64, and for x86-64 (run under Rosetta).
+(defn jit-test [] (-> i64) (+ (jit-test-arch "arm64" "") (jit-test-arch "x86_64" "x86_64-apple-macosx11.0.0")))
+
+(defn jit-test-arch [(arch (slice u8)) (triple (slice u8))] (-> i64)
+  (let [exe (cat3 TMP "/jit_test_" arch)
+        (mut bv) (list1 "build")]
+    (push! (mut bv) "tests/jit_test.coil")
+    (push! (mut bv) "-o")
+    (push! (mut bv) exe)
+    (push! (mut bv) "--quiet")
+    (when (> (len triple) 0) (push! (mut bv) "--target") (push! (mut bv) triple))
+    (let [b (run-cmd "coil" (argv-of bv) 600)
+          r (if (= (.code b) 0) (run-cmd exe (argv-of (list1 arch)) 60) b)]
+      (if (and (= (.code r) 0) (= (.out r) "ok\n"))
+          (do (println "ok   jit ({})" arch) 0)
+          (do (println "FAIL jit ({}): exit {}\n{}{}" arch (.code r) (.out r) (.err r)) 1)))))
+
 (defn cir-test [] (-> i64) (+ (cir-test-arch "arm64" "build/cir_test.o") (cir-test-arch "x86_64" "build/cir_test_x64.o")))
 
 (defn cir-test-arch [(arch (slice u8)) (obj (slice u8))] (-> i64)
@@ -679,10 +699,10 @@
       (= cmd "parity") (parity (if (= (arg-at 2) "--fuzz") (int-arg 3 0) 0))
       (= cmd "codegen") (codegen)
       (= cmd "enc") (enc)
-      (= cmd "exec") (+ (exec-tests) (cir-test))
+      (= cmd "exec") (+ (+ (exec-tests) (cir-test)) (jit-test))
       (= cmd "all")
-        (let [a (parity 500) b (codegen) c (enc) d (exec-tests) e (cir-test)]
-          (if (= (+ (+ (+ a b) (+ c d)) e) 0) (do (println "all package checks pass") 0) 1))
+        (let [a (parity 500) b (codegen) c (enc) d (exec-tests) e (cir-test) f (jit-test)]
+          (if (= (+ (+ (+ a b) (+ c d)) (+ e f)) 0) (do (println "all package checks pass") 0) 1))
       (and (= cmd "gen") (= (arg-at 2) "random"))
         (let [(mut seed) 0 (mut funcs) 20 (mut blocks) 12 (mut i) 3]
           (while (< i (args/count))

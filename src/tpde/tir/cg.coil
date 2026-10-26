@@ -292,10 +292,12 @@
                     (asm/sym-add-undef! a name bind)
                     (asm/sym-add-def! a name -2 0 0 bind))]
         (push! (mut (.func-syms c)) sym)))
-    (block :all
-      (for i (range 0 (cast i64 nf))
-        (let [f (cast u32 i)]
-          (when (not (func-extern? adp f))
-            (when (not (core/compile-func! cp f (get (.func-syms c) i)))
-              (return-from :all false)))))
-      true)))
+    (let [ok (block :all
+               (for i (range 0 (cast i64 nf))
+                 (let [f (cast u32 i)]
+                   (when (not (func-extern? adp f))
+                     (when (not (core/compile-func! cp f (get (.func-syms c) i)))
+                       (return-from :all false)))))
+               true)]
+      (core/compiler-free! cp)
+      ok)))
