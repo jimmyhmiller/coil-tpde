@@ -91,6 +91,20 @@
 
 ;;; Analyze the function the adaptor has switched to. Previous results are
 ;;; discarded.
+;;; Release the analyzer's lists (it is not used again).
+(defn analyzer-free! [A] [(an (mut (Analyzer A)))] (-> void)
+  (free! (mut (.block-layout an)))
+  (free! (mut (.block-loop-map an)))
+  (free! (mut (.loops an)))
+  (free! (mut (.liveness an)))
+  (free! (mut (.rpo an)))
+  (free! (mut (.stack an)))
+  (free! (mut (.loop-parent an)))
+  (free! (mut (.loop-heads an)))
+  (free! (mut (.loop-infos an)))
+  (free! (mut (.trav an)))
+  (free! (mut (.loop-blocks an))))
+
 (defn switch-func! [(A IRAdaptor)] [(an (mut (Analyzer A))) (f u32)] (-> void)
   (build-block-layout! (mut an))
   (compute-liveness! (mut an)))

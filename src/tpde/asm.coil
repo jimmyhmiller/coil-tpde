@@ -70,7 +70,8 @@
 ;;; made the assembler shared between threads.
 (const SYM-CHUNK-LOG 12)
 (const SYM-CHUNK 4096)
-(const SYM-MAX-CHUNKS 16384)
+;; 1024 chunks: 4M symbols (the Coil compiler has ~60k); the table is 24 KB
+(const SYM-MAX-CHUNKS 1024)
 
 (defstruct Asm
   [(sects (ArrayList Section))
@@ -101,6 +102,21 @@
         (Asm :sects s :sym-chunks chunks :nsyms 0 :shared false :sym-lock (primitive/zeroed sync/Mutex)
              :relocs (ArrayList::new [Reloc] a)
              :rt-names (ArrayList::new [(slice u8)] a) :rt-syms (ArrayList::new [u32] a))))))
+
+;;; Release the assembler: section contents, symbols, relocations, the lock.
+;;; Symbol names are the client's.
+(defn asm-free! [(a (ptr Asm))] (-> void)
+  (for i (range 0 (len (.sects a))) (buf/buf-free! (sect-buf a i)))
+  (free! (mut (.sects a)))
+  (for i (range 0 (len (.sym-chunks a))) (free! (mut (elem (mut (.sym-chunks a)) i))))
+  (free! (mut (.sym-chunks a)))
+  (set! (.nsyms a) 0)
+  (free! (mut (.relocs a)))
+  (free! (mut (.rt-names a)))
+  (free! (mut (.rt-syms a)))
+  (when (.shared a)
+    (sync/Mutex::destroy! (field a sym-lock))
+    (set! (.shared a) false)))
 
 ;;; From now on two threads may use `a`: one adding symbols while another
 ;;; reads them (or adds its own).

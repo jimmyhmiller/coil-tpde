@@ -324,6 +324,30 @@
       (set! (.phi-block-idx c) (none))
       c)))
 
+;;; Release everything the compiler (and its analyzer) allocated; it is not
+;;; used again. (The adaptor and the assembler are the client's.)
+(defn compiler-free! [A] [(c (ptr (Compiler A)))] (-> void)
+  (an/analyzer-free! (mut (.an c)))
+  (free! (mut (.vas c)))
+  (free! (mut (.ext-parts c)))
+  (free! (mut (.delayed-free c)))
+  (for i (range 0 5) (free! (free-list c i)))
+  (free! (mut (.dyn-free c)))
+  (free! (mut (.block-labels c)))
+  (free! (mut (.label-offs c)))
+  (free! (mut (.fixups c)))
+  (free! (mut (.func-syms c)))
+  (free! (mut (.ret-offs c)))
+  (free! (mut (.veneers c)))
+  (free! (mut (.tail-stubs c)))
+  (free! (mut (.term-snap c)))
+  (free! (mut (.dbg-rows c)))
+  (free! (mut (.dbg-marks c)))
+  (free! (mut (.dbg-allocas c)))
+  (free! (mut (.dbg-track c)))
+  (free! (mut (.dbg-track-last c)))
+  (free! (mut (.dbg-locs c))))
+
 ;;; Point the compiler (and its analyzer) at another IR instance: a client
 ;;; that keeps several functions in flight switches between them.
 (defn set-adaptor! [A] [(c (ptr (Compiler A))) (ad (ptr A))] (-> void)
