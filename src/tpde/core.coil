@@ -282,7 +282,14 @@
    (dbg-rows (ArrayList u64))
    (dbg-marks (ArrayList u64))
    (dbg-allocas (ArrayList i64))
-   (dbg-last-loc u64)])
+   (dbg-last-loc u64)
+   ; values whose locations the client wants (set before compiling), the
+   ; last location seen of each, and (index, code offset, location) triples
+   ; where one changed, sampled at every row: where a debugger stops, the
+   ; location is exact (debug-value-loc's encoding; 0 for none)
+   (dbg-track (ArrayList u32))
+   (dbg-track-last (ArrayList u64))
+   (dbg-locs (ArrayList u64))])
 
 (impl [A] (Compiler A)
   (new [(ad (ptr A)) (a (ptr Asm)) (arch u8)] (-> (Compiler A))
@@ -309,6 +316,9 @@
       (set! (.dbg-rows c) (ArrayList::new [u64] al))
       (set! (.dbg-marks c) (ArrayList::new [u64] al))
       (set! (.dbg-allocas c) (ArrayList::new [i64] al))
+      (set! (.dbg-track c) (ArrayList::new [u32] al))
+      (set! (.dbg-track-last c) (ArrayList::new [u64] al))
+      (set! (.dbg-locs c) (ArrayList::new [u64] al))
       (set! (.cc c) (cc-new true))
       (set! (.variable-ref-list c) (none))
       (set! (.phi-block-idx c) (none))
@@ -1733,7 +1743,8 @@
                 (when (and (!= l (: 0 u64)) (!= l (.dbg-last-loc c)))
                   (push! (mut (.dbg-rows c)) (cast u64 (text-off c)))
                   (push! (mut (.dbg-rows c)) l)
-                  (set! (.dbg-last-loc c) l))))
+                  (set! (.dbg-last-loc c) l)
+                  (debug-sample! c))))
             (when (not (compile-inst! ad c inst))
               (eprintln "tpde: failed to compile instruction {}" (inst-name ad inst))
               (return-from :blk false))
@@ -1768,6 +1779,9 @@
       (clear! (mut (.dbg-marks c)))
       (clear! (mut (.dbg-allocas c)))
       (set! (.dbg-last-loc c) (: 0 u64))
+      (clear! (mut (.dbg-locs c)))
+      (clear! (mut (.dbg-track-last c)))
+      (for _ (range 0 (len (.dbg-track c))) (push! (mut (.dbg-track-last c)) (: 0 u64)))
       (set! (.fixed-count-gp c) (: 0 u32))
       (set! (.fixed-count-fp c) (: 0 u32))
       (let [nvals (len (.liveness (.an c)))]
@@ -1906,6 +1920,31 @@
           (set! (.cc c) saved)
           (.reg cca)))))
 
+;;; Where value `v` is now: (1 << 56 | register), (2 << 56 | its frame
+;;; offset as a u32), or 0 (not computed yet, or dead).
+(defn debug-value-loc [(A IRAdaptor)] [(c (ptr (Compiler A))) (v u32)] (-> u64)
+  (let [local (val-local c v)]
+    (if (>= (i64-of local) (len (.vas c)))
+        (: 0 u64)
+        (let [va (va-at c local)]
+          (if (or (not (va-live? va)) (va-var-ref? va) (!= (.part-count va) (: 1 u32)))
+              (: 0 u64)
+              (let [p (.p0 va)]
+                (cond (p-reg-valid? p) (| (<< (: 1 u64) (: 56 u64)) (cast u64 (p-reg p)))
+                      (and (!= (.frame-off va) (: 0 i32)) (p-stack-valid? p))
+                        (| (<< (: 2 u64) (: 56 u64)) (cast u64 (cast u32 (.frame-off va))))
+                      :else (: 0 u64))))))))
+
+;;; At a row: note each tracked value whose location changed.
+(defn debug-sample! [(A IRAdaptor)] [(c (ptr (Compiler A)))] (-> void)
+  (for k (range 0 (len (.dbg-track c)))
+    (let [l (debug-value-loc c (get (.dbg-track c) k))]
+      (when (!= l (get (.dbg-track-last c) k))
+        (set! (mut (.dbg-track-last c)) k l)
+        (push! (mut (.dbg-locs c)) (cast u64 k))
+        (push! (mut (.dbg-locs c)) (cast u64 (text-off c)))
+        (push! (mut (.dbg-locs c)) l)))))
+
 ;;; Record mark `id` (a marked instruction) at the current code offset.
 (defn debug-mark! [A] [(c (ptr (Compiler A))) (id i64)] (-> void)
   (push! (mut (.dbg-marks c)) (cast u64 id))
@@ -1920,7 +1959,10 @@
         (when (>= o at64) (set! (mut (.dbg-rows c)) (* i 2) (- o n64)))))
     (for i (range 0 (/ (len (.dbg-marks c)) 2))
       (let [o (get (.dbg-marks c) (+ (* i 2) 1))]
-        (when (>= o at64) (set! (mut (.dbg-marks c)) (+ (* i 2) 1) (- o n64)))))))
+        (when (>= o at64) (set! (mut (.dbg-marks c)) (+ (* i 2) 1) (- o n64)))))
+    (for i (range 0 (/ (len (.dbg-locs c)) 3))
+      (let [o (get (.dbg-locs c) (+ (* i 3) 1))]
+        (when (>= o at64) (set! (mut (.dbg-locs c)) (+ (* i 3) 1) (- o n64)))))))
 
 (defn resolve-fixups! [A] [(c (ptr (Compiler A)))] (-> void)
   (for i (range 0 (len (.fixups c)))

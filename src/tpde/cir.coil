@@ -820,9 +820,7 @@
       (while (>= i 0)
         (let [v (get (.insts f) i)
               x (val f v)]
-          ; (an instruction carrying debug marks stays: its offset is needed)
-          (when (and (pure-op? (cast i64 (.op x))) (= (get uses (i64-of v)) (: 0 u32))
-                     (= (& (.flags x) (: 0x20 u8)) (: 0 u8)))
+          (when (and (pure-op? (cast i64 (.op x))) (= (get uses (i64-of v)) (: 0 u32)))
             (set! (.flags x) (| (.flags x) (: 8 u8)))
             (set! dead (+ dead 1))
             (for k (range 0 (i64-of (.nops x)))
@@ -833,20 +831,75 @@
       (when (> dead 0)
         ; rebuild `insts` without them, block by block (a block's range need
         ; not follow the previous block's: blocks are made before they are filled)
-        (let [(mut out) (.scratch-insts f)]
+        ; A dead instruction's debug marks move to the next live one in its
+        ; block (a terminator at the latest), recorded as (dead, live) pairs.
+        (let [(mut out) (.scratch-insts f)
+              (mut moved) (ArrayList::new [u32] (malloc-allocator))]
           (clear! (mut out))
           (for b (range 0 (len (.blocks f)))
             (let [bb (blk f (u32-of b))
                   lo (i64-of (.ibegin bb))
-                  hi (i64-of (.iend bb))]
+                  hi (i64-of (.iend bb))
+                  (mut pending) (len moved)]
               (set! (.ibegin bb) (u32-of (len out)))
               (for j (range lo hi)
-                (let [v (get (.insts f) j)]
-                  (when (= (& (.flags (val f v)) (: 8 u8)) (: 0 u8))
-                    (push! (mut out) v))))
+                (let [v (get (.insts f) j)
+                      x (val f v)]
+                  (if (= (& (.flags x) (: 8 u8)) (: 0 u8))
+                      (do (push! (mut out) v)
+                          (when (< pending (len moved))
+                            (set! (.flags x) (| (.flags x) (: 0x20 u8)))
+                            (for k (range pending (len moved))
+                              (when (= (% k 2) 1) (set! (mut moved) k v)))
+                            (set! pending (len moved))))
+                      (when (!= (& (.flags x) (: 0x20 u8)) (: 0 u8))
+                        (push! (mut moved) v)
+                        (push! (mut moved) (none))))))
               (set! (.iend bb) (u32-of (len out)))))
+          (when (> (len moved) 0)
+            (for m (range 0 (len (.mark-insts f)))
+              (let [mv (get (.mark-insts f) m)]
+                (for k (range 0 (/ (len moved) 2))
+                  (when (= (get moved (* k 2)) mv) (set! (mut (.mark-insts f)) m (get moved (+ (* k 2) 1))))))))
+          (free! (mut moved))
           (set! (.scratch-insts f) (.insts f))
           (set! (.insts f) out))))))
+
+;;; Whether the function calls anything, runtime calls its instructions
+;;; become included (before finish!, which marks those).
+(defn calls-anything? [(f (ptr Func))] (-> bool)
+  (or (.has-calls f)
+      (let [(mut r) false]
+        (for i (range 0 (len (.insts f)))
+          (when (runtime-call-op? (val f (get (.insts f) i))) (set! r true)))
+        r)))
+
+;;; Remove the stores whose address is alloca `a`, and `a` itself (debug info
+;;; dropping a frame only it would need).
+(defn drop-alloca! [(f (ptr Func)) (a u32)] (-> void)
+  (let [(mut out) (.scratch-insts f)]
+    (clear! (mut out))
+    (for b (range 0 (len (.blocks f)))
+      (let [bb (blk f (u32-of b))
+            lo (i64-of (.ibegin bb))
+            hi (i64-of (.iend bb))]
+        (set! (.ibegin bb) (u32-of (len out)))
+        (for j (range lo hi)
+          (let [v (get (.insts f) j)
+                x (val f v)]
+            (unless (and (= (cast i64 (.op x)) OP-STORE) (= (operand f x (: 0 u32)) a))
+              (push! (mut out) v))))
+        (set! (.iend bb) (u32-of (len out)))))
+    (set! (.scratch-insts f) (.insts f))
+    (set! (.insts f) out))
+  (let [(mut k) 0]
+    (for i (range 0 (len (.allocas f)))
+      (let [v (get (.allocas f) i)]
+        (when (!= v a)
+          (set! (.next (val f v)) (u32-of k))
+          (set! (mut (.allocas f)) k v)
+          (set! k (+ k 1)))))
+    (set! (.len (.allocas f)) k)))
 
 (defn finish! [(f (ptr Func))] (-> void)
   (for b (range 0 (len (.blocks f))) (seal! f (u32-of b)))
