@@ -30,7 +30,8 @@ under Rosetta.
 | Regression programs | ✅ 5/5 `tests/coil` | ✅ 5/5 | `tpde-bench examples COIL tests/coil` |
 | Coil stdlib suites | ✅ 171/171 (parsers 13, serde 41, system 38, text 34, threads 7, traits 38) | ✅ 169/171: the 2 `system` directory-listing tests fail with LLVM -O0 for x86-64 too | `coil test tests/stdlib/…_test.coil --backend tpde` |
 | C ABI | ✅ tpde, tpde program + LLVM lib, LLVM program + tpde lib | ✅ the same three | `scripts/tests/c-abi.py` |
-| Self-host | ✅ the full compiler (`src/compiler/main.coil`, with its LLVM backend) built by tpde passes `dev.py test fast`; the compiler built by tpde builds itself with tpde to a fixed point (stage2 and stage3 text, const and data identical; they differ only in LC_UUID and the code signature) | | see below |
+| Self-host | ✅ the full compiler (`src/compiler/main.coil`, with its LLVM backend) built by tpde, with debug info, passes `dev.py test fast`; the compiler built by tpde builds itself with tpde to a fixed point (stage2 and stage3 text, const and data identical; they differ only in LC_UUID and the code signature) | | see below |
+| Debug info | ✅ lldb: line breakpoints, parameters, locals, a struct, a sum, a slice (`cli/debuginfo`, also for LLVM `-g` and arm64); `llvm-dwarfdump --verify` clean | ✅ the same under Rosetta | `scripts/tests/fast/cli.sh debuginfo` |
 
 Self-host:
 
@@ -62,10 +63,19 @@ lowering, compiling, merge, Mach-O writing) against LLVM's
 
 | Backend | arm64 | vs LLVM -O0 | x86-64 | vs LLVM -O0 |
 |---|---|---|---|---|
-| LLVM -O0 | 1735 ms | 1× | 2235–2281 ms | 1× |
+| LLVM -O0 | 1735–1808 ms | 1× | 2235–2338 ms | 1× |
+| LLVM -O0 `-g` | ~2900 ms | | | |
 | naive arm64 (`--backend arm64`) | ~290 ms | 5.9× | | |
-| **tpde (pipelined, default)** | **130 ms** | **13.3×** ✅ | **130–136 ms** | **16.7–17.1×** ✅ |
-| tpde, one thread (`COIL_TPDE_SERIAL=1`) | ~165 ms | 10.3× | | |
+| **tpde (default: pipelined, debug info on)** | **166–173 ms** | **10.4×** ✅ (≈17× LLVM -O0 -g) | **167 ms** | **14.0×** ✅ |
+| tpde `-g0` (no debug info) | 130 ms | 13.3× | 130–136 ms | 16.7–17.1× |
+| tpde, one thread, `-g0` (`COIL_TPDE_SERIAL=1`) | ~165 ms | 10.3× | | |
+
+Debug info adds about 40 ms on arm64: lowering ~15 ms (recording variables,
+shadow stores, line tracking) on the critical path, compiling a little more
+(the stores, sampling tracked values at rows), and the DWARF encoding (~25 ms)
+on a third pipeline thread; the types and patches at the end take ~4 ms.
+Measured with other work on the machine (load average 4–6); in quieter runs
+the debug build was 156 ms.
 
 Breakdown (arm64, serial, `COIL_TPDE_STATS=1`): lowering AST→CIR ~80 ms (of
 which the promotion scan ~8 ms), compiling CIR→arm64 ~60 ms (analyzer ~17 ms),
@@ -78,18 +88,25 @@ module setup (codegen_a64's signatures, layouts, statics) ~10 ms, merge
 median wall time. x86-64 times are under Rosetta, so they say how the two
 compare there, not what x86-64 hardware would do.
 
+tpde is measured as it builds by default, **with debug info**:
+
 | Program | arm64 LLVM -O0 | arm64 tpde | ratio | x86-64 LLVM -O0 | x86-64 tpde | ratio |
 |---|---|---|---|---|---|---|
-| fib | 424 ms | 425 ms | 1.00 | 714 ms | 608 ms | 0.85 |
-| float | 714 ms | 180 ms | 0.25 | 741 ms | 206 ms | 0.28 |
-| genreduce | 276 ms | 121 ms | 0.44 | 356 ms | 148 ms | 0.42 |
-| loop | 362 ms | 338 ms | 0.93 | 447 ms | 406 ms | 0.91 |
-| memory | 65 ms | 40 ms | 0.62 | 127 ms | 84 ms | 0.66 |
-| prop_bench | 8748 ms | 6371 ms | 0.73 | 12412 ms | 10575 ms | 0.85 |
-| regex_literal | 27 ms | 22 ms | 0.81 | 58 ms | 57 ms | 0.98 |
-| regex_nfa | 28 ms | 22 ms | 0.79 | 60 ms | 60 ms | 1.00 |
-| structcall | 173 ms | 123 ms | 0.71 | 292 ms | 186 ms | 0.64 |
-| tak | 5 ms | 5 ms | ≈1 | 32 ms | 30 ms | 0.94 |
+| fib | 436 ms | 434 ms | 1.00 | 731 ms | 619 ms | 0.85 |
+| float | 736 ms | 186 ms | 0.25 | 764 ms | 213 ms | 0.28 |
+| genreduce | 282 ms | 125 ms | 0.44 | 364 ms | 153 ms | 0.42 |
+| loop | 371 ms | 371 ms | 1.00 | 462 ms | 443 ms | 0.96 |
+| memory | 63 ms | 39 ms | 0.62 | 131 ms | 87 ms | 0.66 |
+| prop_bench | 8779 ms | 7235 ms | 0.82 | 12632 ms | 11852 ms | 0.94 |
+| regex_literal | 26 ms | 20 ms | 0.77 | 56 ms | 55 ms | 0.98 |
+| regex_nfa | 27 ms | 21 ms | 0.78 | 57 ms | 56 ms | 0.98 |
+| structcall | 173 ms | 132 ms | 0.76 | 301 ms | 204 ms | 0.68 |
+| tak | 4 ms | 4 ms | ≈1 | 32 ms | 31 ms | 0.97 |
+
+Debug info's cost against `-g0` is 0–5% except on call-heavy code with many
+parameters: prop_bench is 7.2 s with it and 6.4 s without. (Shadowing every
+`let` had made it 9.4–11.3 s, 1.27× LLVM -O0; giving every small leaf a frame
+for its shadows, 75% slower: see PLAN.md, "Debug info".)
 | slicesum | crash (stack) | crash (stack) | same | crash | crash | same: a slice argument is not a guaranteed tail call |
 | json_tape | needs an input file | | | | | |
 
@@ -105,7 +122,7 @@ Text of `main_a64.coil`'s object:
 
 | Target | LLVM -O0 | tpde | ratio |
 |---|---|---|---|
-| arm64 | 5.45 MB | 5.44 MB | 1.00× ✅ |
+| arm64 | 5.45 MB | 5.44 MB (5.62 MB with debug info's stores) | 1.00× (1.03×) ✅ |
 | x86-64 | 5.69 MB | 6.85 MB | 1.20× ✅ |
 
 Inline copies of 16 bytes or more go through a SIMD register (`ldr q`/`movups`):
@@ -140,6 +157,9 @@ super-linear in both implementations; that is TPDE's lowest-common-loop walk
   clears, lazy promotion scan, memoized lookups, shared small constants), then
   121 ms with the lowering/compiling pipeline. Run time brought under -O0 by
   four register-allocation changes (see PLAN.md, "Where we differ from TPDE").
+- 2026-10-25, debug info by default: first 197 ms (9.2×) with DWARF built at
+  the end; an incremental encoder on its own thread, line-granular rows and
+  allocation-free lookups brought it to 166–173 ms (10.4×).
 - 2026-10-25, x86-64: Coil's `--backend tpde` for x86-64 Mach-O. First runtime
   numbers under Rosetta had genreduce at 1.4× and loop/memory at 1.1×; self
   tail calls as loops, frameless tail jumps, PTRADD fusion and argument
