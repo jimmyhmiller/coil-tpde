@@ -42,15 +42,21 @@
 (extern tpde.tools.check.getenv :as "getenv" [(ptr i8)] (-> (ptr i8)))
 
 (const OURS "build/tpde-test")
+
 (const REF "ref/build/tpde/tpde_test")
+
 (const TMP "/tmp/tpde-check")
+
 (const OBJDUMP "/opt/homebrew/opt/llvm/bin/llvm-objdump")
+
 (const LLVM-MC "/opt/homebrew/opt/llvm/bin/llvm-mc")
 
 (defn tpde-dir [] (-> (slice u8))
-  (cat2 (from-cstr (tpde.tools.check.getenv c"HOME")) "/Documents/Code/open-source/tpde"))
+  (cat2 (from-cstr (tpde.tools.check.getenv c"HOME"))
+        "/Documents/Code/open-source/tpde"))
 
-(defn new-list [] (-> (ArrayList (slice u8))) (ArrayList::new [(slice u8)] (malloc-allocator)))
+(defn new-list [] (-> (ArrayList (slice u8)))
+  (ArrayList::new [(slice u8)] (malloc-allocator)))
 
 ; ============================ random numbers ================================
 ; splitmix64: the generator only needs to be deterministic per seed.
@@ -66,16 +72,19 @@
 
 ;;; Uniform in lo..=hi.
 (defn randint [(r (ptr Rng)) (lo i64) (hi i64)] (-> i64)
-  (+ lo (primitive/cast i64 (% (rng-next! r) (primitive/cast u64 (+ (- hi lo) 1))))))
+  (+ lo
+     (primitive/cast i64 (% (rng-next! r) (primitive/cast u64 (+ (- hi lo) 1))))))
 
 ;;; True with probability pct/100.
-(defn chance [(r (ptr Rng)) (pct i64)] (-> bool) (< (randint r 0 99) pct))
+(defn chance [(r (ptr Rng)) (pct i64)] (-> bool)
+  (< (randint r 0 99) pct))
 
 (defn choose [(r (ptr Rng)) (xs (ptr (ArrayList (slice u8))))] (-> (slice u8))
   (get (load xs) (randint r 0 (- (len (load xs)) 1))))
 
 ;;; `k` distinct elements of `xs`, in random order.
-(defn sample [(r (ptr Rng)) (xs (ptr (ArrayList (slice u8)))) (k i64)] (-> (ArrayList (slice u8)))
+(defn sample [(r (ptr Rng)) (xs (ptr (ArrayList (slice u8)))) (k i64)]
+  (-> (ArrayList (slice u8)))
   (let [(mut pool) (new-list)
         (mut out) (new-list)]
     (for i (range 0 (len (load xs))) (push! (mut pool) (get (load xs) i)))
@@ -102,7 +111,10 @@
     (push-str! (mut b) "%")
     (push-str! (mut b) (get uses i))))
 
-(defn random-func [(r (ptr Rng)) (b (mut StrBuf)) (name (slice u8)) (max-blocks i64)] (-> void)
+(defn random-func [(r (ptr Rng))
+                   (b (mut StrBuf))
+                   (name (slice u8))
+                   (max-blocks i64)] (-> void)
   (let [nargs (randint r 0 4)
         nblocks (randint r 1 max-blocks)
         (mut fargs) (new-list)
@@ -110,7 +122,9 @@
         (mut preds) (ArrayList::new [(ArrayList i64)] (malloc-allocator))
         (mut globals) (new-list)
         (mut counter) 0]
-    (for i (range 0 nargs) (push! (mut fargs) (name-n "a" i)) (push! (mut globals) (name-n "a" i)))
+    (for i (range 0 nargs)
+      (push! (mut fargs) (name-n "a" i))
+      (push! (mut globals) (name-n "a" i)))
     (push-str! (mut b) name)
     (push-str! (mut b) "(")
     (push-uses! (mut b) fargs)
@@ -129,7 +143,8 @@
         (for k (range 0 (len ss))
           (let [s (get ss k)
                 (mut seen) false]
-            (for q (range 0 (len (get preds s))) (when (= (get (get preds s) q) i) (set! seen true)))
+            (for q (range 0 (len (get preds s)))
+              (when (= (get (get preds s) q) i) (set! seen true)))
             (unless seen (push! (mut (elem (mut preds) s)) i))))))
     (for i (range 0 nblocks)
       (let [(mut local) (new-list)
@@ -146,7 +161,10 @@
               (push-str! (mut b) " = phi ")
               (for q (range 0 (len ps))
                 (let [p (get ps q)
-                      src (if (or (chance r 50) (= (len globals) 0)) (name-n "lv" p) (choose r (mut globals)))]
+                      src
+                        (if (or (chance r 50) (= (len globals) 0))
+                            (name-n "lv" p)
+                            (choose r (mut globals)))]
                   (when (> q 0) (push-str! (mut b) ", "))
                   (push-str! (mut b) "[^")
                   (push-str! (mut b) (name-n "b" p))
@@ -164,7 +182,9 @@
             (push-str! (mut b) "  %")
             (push-str! (mut b) (name-n "lv" i))
             (push-str! (mut b) " =")
-            (when (> (len uses) 0) (push-str! (mut b) " ") (push-uses! (mut b) uses))
+            (when (> (len uses) 0)
+              (push-str! (mut b) " ")
+              (push-uses! (mut b) uses))
             (push-str! (mut b) "\n")))
         (push! (mut local) (name-n "lv" i))
         (for _ (range 0 (randint r 0 4))
@@ -185,28 +205,38 @@
                     (push-str! (mut b) ", ")
                     (push-i64! (mut b) (get aligns (randint r 0 1)))
                     (push-str! (mut b) "\n"))
-                  (do (push-str! (mut b) "  %")
-                      (push-str! (mut b) v)
-                      (push-str! (mut b) " =")
-                      (when (> (len uses) 0) (push-str! (mut b) " ") (push-uses! (mut b) uses))
-                      (push-str! (mut b) "\n")
-                      (push! (mut local) v))))))
-        (when (= i 0) (for q (range 0 (len local)) (push! (mut globals) (get local q))))
+                  (do
+                    (push-str! (mut b) "  %")
+                    (push-str! (mut b) v)
+                    (push-str! (mut b) " =")
+                    (when (> (len uses) 0)
+                      (push-str! (mut b) " ")
+                      (push-uses! (mut b) uses))
+                    (push-str! (mut b) "\n")
+                    (push! (mut local) v))))))
+        (when (= i 0)
+          (for q (range 0 (len local)) (push! (mut globals) (get local q))))
         (let [ss (get succs i)]
-          (cond
-            (= (len ss) 0)
-              (if (chance r 50)
-                  (push-str! (mut b) "  terminate\n")
-                  (do (push-str! (mut b) "  ret %") (push-str! (mut b) (choose r (mut local))) (push-str! (mut b) "\n")))
-            (and (= (len ss) 1) (chance r 50))
-              (do (push-str! (mut b) "  br ^") (push-str! (mut b) (name-n "b" (get ss 0))) (push-str! (mut b) "\n"))
-            :else
-              (do (push-str! (mut b) "  jump ")
-                  (for q (range 0 (len ss))
-                    (when (> q 0) (push-str! (mut b) ", "))
-                    (push-str! (mut b) "^")
-                    (push-str! (mut b) (name-n "b" (get ss q))))
-                  (push-str! (mut b) "\n"))))))
+          (cond (= (len ss) 0)
+                  (if (chance r 50)
+                      (push-str! (mut b) "  terminate\n")
+                      (do
+                        (push-str! (mut b) "  ret %")
+                        (push-str! (mut b) (choose r (mut local)))
+                        (push-str! (mut b) "\n")))
+                (and (= (len ss) 1) (chance r 50))
+                  (do
+                    (push-str! (mut b) "  br ^")
+                    (push-str! (mut b) (name-n "b" (get ss 0)))
+                    (push-str! (mut b) "\n"))
+                :else
+                  (do
+                    (push-str! (mut b) "  jump ")
+                    (for q (range 0 (len ss))
+                      (when (> q 0) (push-str! (mut b) ", "))
+                      (push-str! (mut b) "^")
+                      (push-str! (mut b) (name-n "b" (get ss q))))
+                    (push-str! (mut b) "\n"))))))
     (push-str! (mut b) "}\n")))
 
 (defn gen-random [(seed i64) (funcs i64) (max-blocks i64)] (-> (slice u8))
@@ -217,72 +247,132 @@
       (random-func (mut r) (mut b) (name-n "f" i) max-blocks))
     (finish! (mut b))))
 
-(defn line! [(b (mut StrBuf)) (s (slice u8))] (-> void) (push-str! (mut b) s) (push-str! (mut b) "\n"))
+(defn line! [(b (mut StrBuf)) (s (slice u8))] (-> void)
+  (push-str! (mut b) s)
+  (push-str! (mut b) "\n"))
 
 (defn gen-scale [(kind (slice u8)) (n i64)] (-> (Option (slice u8)))
   (let [(mut b) (StrBuf::new (malloc-allocator))]
-    (cond
-      (= kind "many-values")
-        (do (line! (mut b) "f(%a) {\nentry:")
-            (for i (range 0 n)
-              (push-str! (mut b) "  %v") (push-i64! (mut b) i)
-              (push-str! (mut b) (if (= i 0) " = add %a, %a\n" " = add %v"))
-              (when (> i 0) (push-i64! (mut b) (- i 1)) (push-str! (mut b) ", %a\n")))
-            (push-str! (mut b) "  ret %v") (push-i64! (mut b) (- n 1)) (line! (mut b) "\n}")
-            (Some (finish! (mut b))))
-      (= kind "many-blocks")
-        (do (line! (mut b) "f(%a) {")
-            (for i (range 0 n)
-              (push-str! (mut b) "b") (push-i64! (mut b) i) (push-str! (mut b) ":\n  %v") (push-i64! (mut b) i)
-              (line! (mut b) " = add %a, %a")
-              (if (< (+ i 1) n)
-                  (do (push-str! (mut b) "  condbr %v") (push-i64! (mut b) i) (push-str! (mut b) ", ^b")
-                      (push-i64! (mut b) (+ i 1)) (push-str! (mut b) ", ^b") (push-i64! (mut b) n) (line! (mut b) ""))
-                  (do (push-str! (mut b) "  br ^b") (push-i64! (mut b) n) (line! (mut b) ""))))
-            (push-str! (mut b) "b") (push-i64! (mut b) n) (line! (mut b) ":\n  ret %a\n}")
-            (Some (finish! (mut b))))
-      (= kind "loop-nest")
-        (do (line! (mut b) "f(%a) {\nentry:\n  br ^h0")
-            (for i (range 0 n)
-              (push-str! (mut b) "h") (push-i64! (mut b) i) (push-str! (mut b) ":\n  %p") (push-i64! (mut b) i)
-              (push-str! (mut b) " = phi [^")
-              (if (= i 0) (push-str! (mut b) "entry") (do (push-str! (mut b) "h") (push-i64! (mut b) (- i 1))))
-              (push-str! (mut b) ", %a], [^l") (push-i64! (mut b) i) (push-str! (mut b) ", %q") (push-i64! (mut b) i)
-              (line! (mut b) "]")
-              (push-str! (mut b) "  %q") (push-i64! (mut b) i) (push-str! (mut b) " = add %p") (push-i64! (mut b) i)
-              (line! (mut b) ", %a")
-              (push-str! (mut b) "  condbr %q") (push-i64! (mut b) i) (push-str! (mut b) ", ^")
-              (if (< (+ i 1) n) (do (push-str! (mut b) "h") (push-i64! (mut b) (+ i 1))) (push-str! (mut b) "inner"))
-              (push-str! (mut b) ", ^l") (push-i64! (mut b) i) (line! (mut b) ""))
-            (push-str! (mut b) "inner:\n  %x = add %a, %a\n  br ^l") (push-i64! (mut b) (- n 1)) (line! (mut b) "")
-            (let [(mut i) (- n 1)]
-              (while (>= i 0)
-                (push-str! (mut b) "l") (push-i64! (mut b) i) (push-str! (mut b) ":\n  condbr %a, ^h")
-                (push-i64! (mut b) i) (push-str! (mut b) ", ^")
-                (if (> i 0) (do (push-str! (mut b) "l") (push-i64! (mut b) (- i 1))) (push-str! (mut b) "exit"))
-                (line! (mut b) "")
-                (set! i (- i 1))))
-            (line! (mut b) "exit:\n  ret %a\n}")
-            (Some (finish! (mut b))))
-      (= kind "many-funcs")
-        (do (for i (range 0 n)
-              (push-str! (mut b) "f") (push-i64! (mut b) i)
-              (line! (mut b) "(%a, %b) {\nentry:\n  %c = add %a, %b\n  %d = sub %c, %a\n  ret %d\n}"))
-            (Some (finish! (mut b))))
-      (= kind "switch")
-        (do (push-str! (mut b) "f(%a) {\nentry:\n  jump ")
-            (for i (range 0 n) (push-str! (mut b) "^c") (push-i64! (mut b) i) (push-str! (mut b) ", "))
-            (line! (mut b) "^exit")
-            (for i (range 0 n)
-              (push-str! (mut b) "c") (push-i64! (mut b) i) (push-str! (mut b) ":\n  %v") (push-i64! (mut b) i)
-              (line! (mut b) " = add %a, %a\n  br ^exit"))
-            (push-str! (mut b) "exit:\n  %r = phi ")
-            (for i (range 0 n)
-              (push-str! (mut b) "[^c") (push-i64! (mut b) i) (push-str! (mut b) ", %v") (push-i64! (mut b) i)
-              (push-str! (mut b) "], "))
-            (line! (mut b) "[^entry, %a]\n  ret %r\n}")
-            (Some (finish! (mut b))))
-      :else (None [(slice u8)]))))
+    (cond (= kind "many-values")
+            (do
+              (line! (mut b) "f(%a) {\nentry:")
+              (for i (range 0 n)
+                (push-str! (mut b) "  %v")
+                (push-i64! (mut b) i)
+                (push-str! (mut b) (if (= i 0) " = add %a, %a\n" " = add %v"))
+                (when (> i 0)
+                  (push-i64! (mut b) (- i 1))
+                  (push-str! (mut b) ", %a\n")))
+              (push-str! (mut b) "  ret %v")
+              (push-i64! (mut b) (- n 1))
+              (line! (mut b) "\n}")
+              (Some (finish! (mut b))))
+          (= kind "many-blocks")
+            (do
+              (line! (mut b) "f(%a) {")
+              (for i (range 0 n)
+                (push-str! (mut b) "b")
+                (push-i64! (mut b) i)
+                (push-str! (mut b) ":\n  %v")
+                (push-i64! (mut b) i)
+                (line! (mut b) " = add %a, %a")
+                (if (< (+ i 1) n)
+                    (do
+                      (push-str! (mut b) "  condbr %v")
+                      (push-i64! (mut b) i)
+                      (push-str! (mut b) ", ^b")
+                      (push-i64! (mut b) (+ i 1))
+                      (push-str! (mut b) ", ^b")
+                      (push-i64! (mut b) n)
+                      (line! (mut b) ""))
+                    (do
+                      (push-str! (mut b) "  br ^b")
+                      (push-i64! (mut b) n)
+                      (line! (mut b) ""))))
+              (push-str! (mut b) "b")
+              (push-i64! (mut b) n)
+              (line! (mut b) ":\n  ret %a\n}")
+              (Some (finish! (mut b))))
+          (= kind "loop-nest")
+            (do
+              (line! (mut b) "f(%a) {\nentry:\n  br ^h0")
+              (for i (range 0 n)
+                (push-str! (mut b) "h")
+                (push-i64! (mut b) i)
+                (push-str! (mut b) ":\n  %p")
+                (push-i64! (mut b) i)
+                (push-str! (mut b) " = phi [^")
+                (if (= i 0)
+                    (push-str! (mut b) "entry")
+                    (do (push-str! (mut b) "h") (push-i64! (mut b) (- i 1))))
+                (push-str! (mut b) ", %a], [^l")
+                (push-i64! (mut b) i)
+                (push-str! (mut b) ", %q")
+                (push-i64! (mut b) i)
+                (line! (mut b) "]")
+                (push-str! (mut b) "  %q")
+                (push-i64! (mut b) i)
+                (push-str! (mut b) " = add %p")
+                (push-i64! (mut b) i)
+                (line! (mut b) ", %a")
+                (push-str! (mut b) "  condbr %q")
+                (push-i64! (mut b) i)
+                (push-str! (mut b) ", ^")
+                (if (< (+ i 1) n)
+                    (do (push-str! (mut b) "h") (push-i64! (mut b) (+ i 1)))
+                    (push-str! (mut b) "inner"))
+                (push-str! (mut b) ", ^l")
+                (push-i64! (mut b) i)
+                (line! (mut b) ""))
+              (push-str! (mut b) "inner:\n  %x = add %a, %a\n  br ^l")
+              (push-i64! (mut b) (- n 1))
+              (line! (mut b) "")
+              (let [(mut i) (- n 1)]
+                (while (>= i 0)
+                  (push-str! (mut b) "l")
+                  (push-i64! (mut b) i)
+                  (push-str! (mut b) ":\n  condbr %a, ^h")
+                  (push-i64! (mut b) i)
+                  (push-str! (mut b) ", ^")
+                  (if (> i 0)
+                      (do (push-str! (mut b) "l") (push-i64! (mut b) (- i 1)))
+                      (push-str! (mut b) "exit"))
+                  (line! (mut b) "")
+                  (set! i (- i 1))))
+              (line! (mut b) "exit:\n  ret %a\n}")
+              (Some (finish! (mut b))))
+          (= kind "many-funcs")
+            (do
+              (for i (range 0 n)
+                (push-str! (mut b) "f")
+                (push-i64! (mut b) i)
+                (line! (mut b)
+                       "(%a, %b) {\nentry:\n  %c = add %a, %b\n  %d = sub %c, %a\n  ret %d\n}"))
+              (Some (finish! (mut b))))
+          (= kind "switch")
+            (do
+              (push-str! (mut b) "f(%a) {\nentry:\n  jump ")
+              (for i (range 0 n)
+                (push-str! (mut b) "^c")
+                (push-i64! (mut b) i)
+                (push-str! (mut b) ", "))
+              (line! (mut b) "^exit")
+              (for i (range 0 n)
+                (push-str! (mut b) "c")
+                (push-i64! (mut b) i)
+                (push-str! (mut b) ":\n  %v")
+                (push-i64! (mut b) i)
+                (line! (mut b) " = add %a, %a\n  br ^exit"))
+              (push-str! (mut b) "exit:\n  %r = phi ")
+              (for i (range 0 n)
+                (push-str! (mut b) "[^c")
+                (push-i64! (mut b) i)
+                (push-str! (mut b) ", %v")
+                (push-i64! (mut b) i)
+                (push-str! (mut b) "], "))
+              (line! (mut b) "[^entry, %a]\n  ret %r\n}")
+              (Some (finish! (mut b))))
+          :else (None [(slice u8)]))))
 
 ; ============================ RUN lines =====================================
 
@@ -296,7 +386,9 @@
           ; the text after "RUN:"
           (let [l (get ls i)
                 (mut k) 0]
-            (while (and (< (+ k 4) (len l)) (not (= (subslice l k (+ k 4)) "RUN:"))) (set! k (+ k 1)))
+            (while (and (< (+ k 4) (len l))
+                        (not (= (subslice l k (+ k 4)) "RUN:")))
+              (set! k (+ k 1)))
             (push! (mut out) (subslice l (+ k 4) (len l)))))))
     out))
 
@@ -320,14 +412,17 @@
         fail (and (> (len ws0) 0) (= (get ws0 0) "not"))
         start (if fail 1 0)]
     (if (or (<= (len ws0) start)
-            (not (or (= (get ws0 start) "%tpde_test") (= (get ws0 start) "tpde_test"))))
+            (not (or (= (get ws0 start) "%tpde_test")
+                     (= (get ws0 start) "tpde_test"))))
         (None [Case])
         (let [(mut av) (new-list)
               (mut analysis) false]
           (for i (range (+ start 1) (len ws0))
             (let [w (get ws0 i)]
               (push! (mut av) (if (= w "%s") path w))
-              (when (or (= w "--print-ir") (and (starts-with? w "--run-until=") (not (= w "--run-until=full"))))
+              (when (or (= w "--print-ir")
+                        (and (starts-with? w "--run-until=")
+                             (not (= w "--run-until=full"))))
                 (set! analysis true))))
           (if analysis (Some (Case :args av :expect-fail fail)) (None [Case]))))))
 
@@ -352,12 +447,14 @@
             (return-from :done 0))))
       0)))
 
-(defn tir-files [(dirs (ptr (ArrayList (slice u8))))] (-> (ArrayList (slice u8)))
+(defn tir-files [(dirs (ptr (ArrayList (slice u8))))]
+  (-> (ArrayList (slice u8)))
   (let [(mut out) (new-list)]
     (for d (range 0 (len (load dirs)))
       (let [dir (get (load dirs) d)
             names (coil-files-in dir ".tir")]
-        (for i (range 0 (len names)) (push! (mut out) (cat3 dir "/" (get names i))))))
+        (for i (range 0 (len names))
+          (push! (mut out) (cat3 dir "/" (get names i))))))
     out))
 
 ; ============================ parity ========================================
@@ -392,13 +489,19 @@
                       same-status (= (= (.code r) 0) (= (.code o) 0))]
                   ; a failing run's output is the reference's timestamped log;
                   ; only the status is compared
-                  (if (and same-status (or (!= (.code r) 0) (= (.out r) (.out o))))
+                  (if (and same-status
+                           (or (!= (.code r) 0) (= (.out r) (.out o))))
                       (set! passed (+ passed 1))
-                      (do (set! failed (+ failed 1))
-                          (println "FAIL {}{}" path (show-args (.args c) path))
-                          (println "  exit: ref {}, ours {}" (.code r) (.code o))
-                          (unless (= (.out r) (.out o)) (first-diff (.out r) (.out o)))))))))))
-    (println "parity: {} passed, {} failed, {} files without analyzer RUN lines" passed failed skipped)
+                      (do
+                        (set! failed (+ failed 1))
+                        (println "FAIL {}{}" path (show-args (.args c) path))
+                        (println "  exit: ref {}, ours {}" (.code r) (.code o))
+                        (unless (= (.out r) (.out o))
+                          (first-diff (.out r) (.out o)))))))))))
+    (println "parity: {} passed, {} failed, {} files without analyzer RUN lines"
+             passed
+             failed
+             skipped)
     (when (> fuzz 0)
       (let [(mut fz-fail) 0
             blocks [3 6 12 30 80]]
@@ -415,7 +518,11 @@
                   o (run-cmd OURS (argv-of av) 120)]
               (unless (and (= (.code r) (.code o)) (= (.out r) (.out o)))
                 (set! fz-fail (+ fz-fail 1))
-                (println "FUZZ FAIL seed {} (exit ref {}, ours {}); kept {}" seed (.code r) (.code o) path)))))
+                (println "FUZZ FAIL seed {} (exit ref {}, ours {}); kept {}"
+                         seed
+                         (.code r)
+                         (.code o)
+                         path)))))
         (println "fuzz: {} passed, {} failed" (- fuzz fz-fail) fz-fail)
         (set! failed (+ failed fz-fail))))
     (if (= failed 0) 0 1)))
@@ -440,7 +547,8 @@
         (let [l (get ls i)
               ws (words l)]
           (unless (or (= (len ws) 0)
-                      (contains-text? l "file format") (contains-text? l "Disassembly of")
+                      (contains-text? l "file format")
+                      (contains-text? l "Disassembly of")
                       (and (= (len ws) 1) (= (get ws 0) "..."))
                       (contains-text? l "udf"))
             (let [cut (strip-comment l)]
@@ -460,12 +568,15 @@
   (let [(mut end) (len s)]
     (block :found
       (for i (range 0 (- (len s) 1))
-        (when (and (= (get s i) #\/) (= (get s (+ i 1)) #\/)) (set! end i) (return-from :found 0)))
+        (when (and (= (get s i) #\/) (= (get s (+ i 1)) #\/))
+          (set! end i)
+          (return-from :found 0)))
       0)
     (while (and (> end 0) (space? (get s (- end 1)))) (set! end (- end 1)))
     (subslice s 0 end)))
 
-(defn replace-all [(s (slice u8)) (from (slice u8)) (to (slice u8))] (-> (slice u8))
+(defn replace-all [(s (slice u8)) (from (slice u8)) (to (slice u8))]
+  (-> (slice u8))
   (let [(mut b) (StrBuf::new (malloc-allocator))
         n (len from)
         (mut i) 0]
@@ -492,34 +603,51 @@
                     (for k (range 0 (len runs))
                       (let [run (get runs k)
                             ws (first-command run)]
-                        (when (and (or (contains-text? run "--target=aarch64") (contains-text? run "--target=x86_64"))
+                        (when (and (or (contains-text? run "--target=aarch64")
+                                       (contains-text? run "--target=x86_64"))
                                    (contains-text? run "%objdump")
-                                   (> (len ws) 0) (or (= (get ws 0) "tpde_test") (= (get ws 0) "%tpde_test")))
+                                   (> (len ws) 0)
+                                   (or (= (get ws 0) "tpde_test")
+                                       (= (get ws 0) "%tpde_test")))
                           (let [(mut av) (new-list)]
-                            (for i (range 1 (len ws)) (push! (mut av) (if (= (get ws i) "%s") path (get ws i))))
+                            (for i (range 1 (len ws))
+                              (push! (mut av)
+                                     (if (= (get ws i) "%s") path (get ws i))))
                             (let [r (run-cmd REF (argv-of av) 120)
                                   refobj (cat2 TMP "/ref.o")
                                   ourobj (cat2 TMP "/ours.o")
                                   (mut ov) (new-list)]
                               ; a fresh list: a copy of `av` would share (and regrow) its buffer
-                              (for i (range 0 (len av)) (push! (mut ov) (get av i)))
+                              (for i (range 0 (len av))
+                                (push! (mut ov) (get av i)))
                               (push! (mut ov) "-o")
                               (push! (mut ov) ourobj)
                               (write-text refobj (.out r))
                               (let [o (run-cmd OURS (argv-of ov) 120)]
                                 (if (or (!= (.code r) 0) (!= (.code o) 0))
-                                    (do (set! broken (+ broken 1))
-                                        (println "FAIL {}{}: exit ref {}, ours {}" path (show-args av path) (.code r) (.code o)))
+                                    (do
+                                      (set! broken (+ broken 1))
+                                      (println "FAIL {}{}: exit ref {}, ours {}"
+                                               path
+                                               (show-args av path)
+                                               (.code r)
+                                               (.code o)))
                                     (let [dr (disasm refobj)
                                           do- (disasm ourobj)]
                                       (if (= dr do-)
                                           (set! same (+ same 1))
-                                          (do (set! differ (+ differ 1))
-                                              (println "differs: {}{}" path (show-args av path))
-                                              (first-diff dr do-))))))))))))
+                                          (do
+                                            (set! differ (+ differ 1))
+                                            (println "differs: {}{}"
+                                                     path
+                                                     (show-args av path))
+                                            (first-diff dr do-))))))))))))
                   0)
             (None [] 0)))))
-    (println "codegen: {} identical to the reference, {} differ, {} failed to compile" same differ broken)
+    (println "codegen: {} identical to the reference, {} differ, {} failed to compile"
+             same
+             differ
+             broken)
     (if (= broken 0) 0 1)))
 
 ; ============================ encoder ========================================
@@ -536,8 +664,13 @@
   (let [src (cat3 "tests/enc_" name ".coil")
         exe (cat2 "build/enc_" name)
         (mut bv) (list1 "build")
-        _ (do (push! (mut bv) src) (push! (mut bv) "-o") (push! (mut bv) exe)
-              (push! (mut bv) "--quiet") 0)
+        _
+          (do
+            (push! (mut bv) src)
+            (push! (mut bv) "-o")
+            (push! (mut bv) exe)
+            (push! (mut bv) "--quiet")
+            0)
         b (run-cmd "coil" (argv-of bv) 600)
         r (if (= (.code b) 0) (run-cmd exe (argv-of (new-list)) 60) b)
         ls (lines (.out r))
@@ -566,24 +699,45 @@
                 (let [(mut pending) ""]
                   (for i (range 0 (len out))
                     (let [ws (words (get out i))]
-                      (unless (or (= (len ws) 0) (= (get ws 0) ".text") (starts-with? (get ws 0) ".intel_syntax"))
+                      (unless (or (= (len ws) 0)
+                                  (= (get ws 0) ".text")
+                                  (starts-with? (get ws 0) ".intel_syntax"))
                         (let [text (canon-asm (strip-comment (get out i)))]
                           ; x86 prefixes come out on a line of their own
                           (if (= text "lock")
                               (set! pending "lock ")
-                              (do (push! (mut got) (cat2 pending text)) (set! pending ""))))))))
+                              (do
+                                (push! (mut got) (cat2 pending text))
+                                (set! pending ""))))))))
                 (if (!= (len got) (len want))
-                    (do (println "enc {}: llvm-mc gave {} instructions for {}:\n{}" name (len got) (len want) (.err m))
-                        (for i (range 0 (if (< (len got) (len want)) (len got) (len want)))
-                          (unless (= (get got i) (get want i))
-                            (println "  first difference: want [{}] got [{}]" (get want i) (get got i))))
-                        1)
-                    (do (for i (range 0 (len want))
-                          (unless (= (get got i) (get want i))
-                            (println "MISMATCH {}: want [{}] got [{}]" name (get want i) (get got i))
-                            (set! bad (+ bad 1))))
-                        (println "encoder {}: {} checked, {} mismatched" name (len want) bad)
-                        (if (= bad 0) 0 1))))))))))
+                    (do
+                      (println "enc {}: llvm-mc gave {} instructions for {}:\n{}"
+                               name
+                               (len got)
+                               (len want)
+                               (.err m))
+                      (for i (range 0
+                                    (if (< (len got) (len want))
+                                        (len got)
+                                        (len want)))
+                        (unless (= (get got i) (get want i))
+                          (println "  first difference: want [{}] got [{}]"
+                                   (get want i)
+                                   (get got i))))
+                      1)
+                    (do
+                      (for i (range 0 (len want))
+                        (unless (= (get got i) (get want i))
+                          (println "MISMATCH {}: want [{}] got [{}]"
+                                   name
+                                   (get want i)
+                                   (get got i))
+                          (set! bad (+ bad 1))))
+                      (println "encoder {}: {} checked, {} mismatched"
+                               name
+                               (len want)
+                               bad)
+                      (if (= bad 0) 0 1))))))))))
 
 ;;; llvm-mc's `\tadd\tx0, x1` as `add x0, x1`.
 (defn canon-asm [(s (slice u8))] (-> (slice u8))
@@ -627,15 +781,23 @@
                   r (if (= (.code l) 0) (run-cmd exe (argv-of (new-list)) 60) l)]
               (if (and (= (.code r) 0) (= (.out r) "ok\n"))
                   (println "ok   {} ({})" base arch)
-                  (do (println "FAIL {} ({}): exit {}\n{}{}" base arch (.code r) (.out r) (.err r))
-                      (set! bad (+ bad 1)))))))))
+                  (do
+                    (println "FAIL {} ({}): exit {}\n{}{}"
+                             base
+                             arch
+                             (.code r)
+                             (.out r)
+                             (.err r))
+                    (set! bad (+ bad 1)))))))))
     (if (= bad 0) 0 1)))
 
 ;;; tests/cir_test.coil builds CIR functions with the builder (Braun SSA) and
 ;;; compiles them to build/cir_test.o; tests/cir_test.c calls and checks them.
 ;;; tests/jit_test.coil compiles TIR in its own process and runs it through
 ;;; tpde.jit: built for arm64, and for x86-64 (run under Rosetta).
-(defn jit-test [] (-> i64) (+ (jit-test-arch "arm64" "") (jit-test-arch "x86_64" "x86_64-apple-macosx11.0.0")))
+(defn jit-test [] (-> i64)
+  (+ (jit-test-arch "arm64" "")
+     (jit-test-arch "x86_64" "x86_64-apple-macosx11.0.0")))
 
 (defn jit-test-arch [(arch (slice u8)) (triple (slice u8))] (-> i64)
   (let [exe (cat3 TMP "/jit_test_" arch)
@@ -644,14 +806,24 @@
     (push! (mut bv) "-o")
     (push! (mut bv) exe)
     (push! (mut bv) "--quiet")
-    (when (> (len triple) 0) (push! (mut bv) "--target") (push! (mut bv) triple))
+    (when (> (len triple) 0)
+      (push! (mut bv) "--target")
+      (push! (mut bv) triple))
     (let [b (run-cmd "coil" (argv-of bv) 600)
           r (if (= (.code b) 0) (run-cmd exe (argv-of (list1 arch)) 60) b)]
       (if (and (= (.code r) 0) (= (.out r) "ok\n"))
           (do (println "ok   jit ({})" arch) 0)
-          (do (println "FAIL jit ({}): exit {}\n{}{}" arch (.code r) (.out r) (.err r)) 1)))))
+          (do
+            (println "FAIL jit ({}): exit {}\n{}{}"
+                     arch
+                     (.code r)
+                     (.out r)
+                     (.err r))
+            1)))))
 
-(defn cir-test [] (-> i64) (+ (cir-test-arch "arm64" "build/cir_test.o") (cir-test-arch "x86_64" "build/cir_test_x64.o")))
+(defn cir-test [] (-> i64)
+  (+ (cir-test-arch "arm64" "build/cir_test.o")
+     (cir-test-arch "x86_64" "build/cir_test_x64.o")))
 
 (defn cir-test-arch [(arch (slice u8)) (obj (slice u8))] (-> i64)
   (let [(mut bv) (list1 "build")]
@@ -660,7 +832,10 @@
     (push! (mut bv) "build/cir_test")
     (push! (mut bv) "--quiet")
     (let [b (run-cmd "coil" (argv-of bv) 600)
-          g (if (= (.code b) 0) (run-cmd "build/cir_test" (argv-of (new-list)) 60) b)
+          g
+            (if (= (.code b) 0)
+                (run-cmd "build/cir_test" (argv-of (new-list)) 60)
+                b)
           exe (cat3 TMP "/cir_test_" arch)
           (mut lv) (list1 "-arch")]
       (push! (mut lv) arch)
@@ -672,11 +847,18 @@
             r (if (= (.code l) 0) (run-cmd exe (argv-of (new-list)) 60) l)]
         (if (and (= (.code r) 0) (= (.out r) "ok\n"))
             (do (println "ok   cir_test ({})" arch) 0)
-            (do (println "FAIL cir_test ({}): exit {}\n{}{}" arch (.code r) (.out r) (.err r)) 1))))))
+            (do
+              (println "FAIL cir_test ({}): exit {}\n{}{}"
+                       arch
+                       (.code r)
+                       (.out r)
+                       (.err r))
+              1))))))
 
 ; ============================ main ===========================================
 
-(defn arg-at [(i i64)] (-> (slice u8)) (if (< i (args/count)) (args/nth i) ""))
+(defn arg-at [(i i64)] (-> (slice u8))
+  (if (< i (args/count)) (args/nth i) ""))
 
 (defn int-arg [(i i64) (default i64)] (-> i64)
   (match (parse-int (arg-at i)) (Some [v] v) (None [] default)))
@@ -695,26 +877,36 @@
   (args/init! argc argv)
   (fs/create-dir (malloc-allocator) TMP 493)
   (let [cmd (arg-at 1)]
-    (cond
-      (= cmd "parity") (parity (if (= (arg-at 2) "--fuzz") (int-arg 3 0) 0))
-      (= cmd "codegen") (codegen)
-      (= cmd "enc") (enc)
-      (= cmd "exec") (+ (+ (exec-tests) (cir-test)) (jit-test))
-      (= cmd "all")
-        (let [a (parity 500) b (codegen) c (enc) d (exec-tests) e (cir-test) f (jit-test)]
-          (if (= (+ (+ (+ a b) (+ c d)) (+ e f)) 0) (do (println "all package checks pass") 0) 1))
-      (and (= cmd "gen") (= (arg-at 2) "random"))
-        (let [(mut seed) 0 (mut funcs) 20 (mut blocks) 12 (mut i) 3]
-          (while (< i (args/count))
-            (cond (= (arg-at i) "--seed") (set! seed (int-arg (+ i 1) 0))
-                  (= (arg-at i) "--funcs") (set! funcs (int-arg (+ i 1) 20))
-                  (= (arg-at i) "--blocks") (set! blocks (int-arg (+ i 1) 12))
-                  :else 0)
-            (set! i (+ i 2)))
-          (print "{}" (gen-random seed funcs blocks))
-          0)
-      (and (= cmd "gen") (= (arg-at 2) "scale"))
-        (match (gen-scale (arg-at 3) (int-arg 4 1000))
-          (Some [text] (do (print "{}" text) 0))
-          (None [] (do (eprintln "unknown kind {}" (arg-at 3)) 2)))
-      :else (usage))))
+    (cond (= cmd "parity") (parity (if (= (arg-at 2) "--fuzz") (int-arg 3 0) 0))
+          (= cmd "codegen") (codegen)
+          (= cmd "enc") (enc)
+          (= cmd "exec") (+ (+ (exec-tests) (cir-test)) (jit-test))
+          (= cmd "all")
+            (let [a (parity 500)
+                  b (codegen)
+                  c (enc)
+                  d (exec-tests)
+                  e (cir-test)
+                  f (jit-test)]
+              (if (= (+ (+ (+ a b) (+ c d)) (+ e f)) 0)
+                  (do (println "all package checks pass") 0)
+                  1))
+          (and (= cmd "gen") (= (arg-at 2) "random"))
+            (let [(mut seed) 0
+                  (mut funcs) 20
+                  (mut blocks) 12
+                  (mut i) 3]
+              (while (< i (args/count))
+                (cond (= (arg-at i) "--seed") (set! seed (int-arg (+ i 1) 0))
+                      (= (arg-at i) "--funcs") (set! funcs (int-arg (+ i 1) 20))
+                      (= (arg-at i) "--blocks")
+                        (set! blocks (int-arg (+ i 1) 12))
+                      :else 0)
+                (set! i (+ i 2)))
+              (print "{}" (gen-random seed funcs blocks))
+              0)
+          (and (= cmd "gen") (= (arg-at 2) "scale"))
+            (match (gen-scale (arg-at 3) (int-arg 4 1000))
+              (Some [text] (do (print "{}" text) 0))
+              (None [] (do (eprintln "unknown kind {}" (arg-at 3)) 2)))
+          :else (usage))))

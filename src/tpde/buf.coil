@@ -5,20 +5,28 @@
 ;;; A growable byte buffer with direct little-endian writes, for code and data.
 ;;; It grows with `realloc` and never shrinks; `clear!` keeps the storage.
 (module tpde.buf)
-(import "coil.primitive" :as primitive)
 (import "coil.cc" :as cc)
 
 (extern malloc :cc (cc/C) [i64] (-> (ptr u8)))
+
 (extern realloc :cc (cc/C) [(ptr u8) i64] (-> (ptr u8)))
+
 (extern free :cc (cc/C) [(ptr u8)] (-> void))
+
 (extern memcpy :cc (cc/C) [(ptr u8) (ptr u8) i64] (-> (ptr u8)))
+
 (extern memset :cc (cc/C) [(ptr u8) i32 i64] (-> (ptr u8)))
+
 (extern memmove :cc (cc/C) [(ptr u8) (ptr u8) i64] (-> (ptr u8)))
 
 (defstruct Buf [(data (ptr u8)) (len i64) (cap i64)])
 
 (impl Buf
-  (new [] (-> Buf) (Buf :data (cast (ptr u8) 0) :len 0 :cap 0)))
+  (new [] (-> Buf)
+    (Buf
+      :data (cast (ptr u8) 0)
+      :len 0
+      :cap 0)))
 
 (defn buf-reserve! [(b (ptr Buf)) (extra i64)] (-> void)
   (let [need (+ (.len b) extra)]
@@ -28,7 +36,8 @@
         (set! (.data b) (realloc (.data b) cap))
         (set! (.cap b) cap)))))
 
-(defn buf-clear! [(b (ptr Buf))] (-> void) (set! (.len b) 0))
+(defn buf-clear! [(b (ptr Buf))] (-> void)
+  (set! (.len b) 0))
 
 (defn buf-free! [(b (ptr Buf))] (-> void)
   (when (!= (cast i64 (.data b)) 0) (free (.data b)))
@@ -36,26 +45,27 @@
   (set! (.len b) 0)
   (set! (.cap b) 0))
 
-(defn buf-at [(b (ptr Buf)) (off i64)] (-> (ptr u8)) (primitive/index (.data b) off))
+(defn buf-at [(b (ptr Buf)) (off i64)] (-> (ptr u8))
+  (index (.data b) off))
 
 (defn emit8! [(b (ptr Buf)) (x u8)] (-> void)
   (buf-reserve! b 1)
-  (store! (buf-at b (.len b)) x)
+  (set! (buf-at b (.len b)) x)
   (set! (.len b) (+ (.len b) 1)))
 
 (defn emit16! [(b (ptr Buf)) (x u16)] (-> void)
   (buf-reserve! b 2)
-  (store! (cast (ptr u16) (buf-at b (.len b))) x)
+  (set! (cast (ptr u16) (buf-at b (.len b))) x)
   (set! (.len b) (+ (.len b) 2)))
 
 (defn emit32! [(b (ptr Buf)) (x u32)] (-> void)
   (buf-reserve! b 4)
-  (store! (cast (ptr u32) (buf-at b (.len b))) x)
+  (set! (cast (ptr u32) (buf-at b (.len b))) x)
   (set! (.len b) (+ (.len b) 4)))
 
 (defn emit64! [(b (ptr Buf)) (x u64)] (-> void)
   (buf-reserve! b 8)
-  (store! (cast (ptr u64) (buf-at b (.len b))) x)
+  (set! (cast (ptr u64) (buf-at b (.len b))) x)
   (set! (.len b) (+ (.len b) 8)))
 
 (defn emit-bytes! [(b (ptr Buf)) (p (ptr u8)) (n i64)] (-> void)
@@ -77,10 +87,17 @@
   (let [pad (- (& (+ (.len b) (- align 1)) (- 0 align)) (.len b))]
     (emit-zeros! b pad)))
 
-(defn read32 [(b (ptr Buf)) (off i64)] (-> u32) (load (cast (ptr u32) (buf-at b off))))
-(defn patch32! [(b (ptr Buf)) (off i64) (x u32)] (-> void) (store! (cast (ptr u32) (buf-at b off)) x))
-(defn patch64! [(b (ptr Buf)) (off i64) (x u64)] (-> void) (store! (cast (ptr u64) (buf-at b off)) x))
-(defn patch8! [(b (ptr Buf)) (off i64) (x u8)] (-> void) (store! (buf-at b off) x))
+(defn read32 [(b (ptr Buf)) (off i64)] (-> u32)
+  (load (cast (ptr u32) (buf-at b off))))
+
+(defn patch32! [(b (ptr Buf)) (off i64) (x u32)] (-> void)
+  (set! (cast (ptr u32) (buf-at b off)) x))
+
+(defn patch64! [(b (ptr Buf)) (off i64) (x u64)] (-> void)
+  (set! (cast (ptr u64) (buf-at b off)) x))
+
+(defn patch8! [(b (ptr Buf)) (off i64) (x u8)] (-> void)
+  (set! (buf-at b off) x))
 
 ;;; Remove `n` bytes at `off`, shifting the rest down.
 (defn cut! [(b (ptr Buf)) (off i64) (n i64)] (-> void)
@@ -93,19 +110,17 @@
 
 (defn uleb! [(b (ptr Buf)) (v0 u64)] (-> void)
   (let [(mut v) v0]
-    (loop
-      (let [byte (cast u8 (& v (: 0x7f u64)))]
-        (set! v (>> v (: 7 u64)))
-        (if (= v (: 0 u64))
-            (do (emit8! b byte) (break))
-            (emit8! b (| byte (: 0x80 u8))))))))
+    (loop (let [byte (cast u8 (& v (: 0x7f u64)))]
+            (set! v (>> v (: 7 u64)))
+            (if (= v (: 0 u64))
+                (do (emit8! b byte) (break))
+                (emit8! b (| byte (: 0x80 u8))))))))
 
 (defn sleb! [(b (ptr Buf)) (v0 i64)] (-> void)
   (let [(mut v) v0]
-    (loop
-      (let [byte (cast u8 (& v 0x7f))]
-        (set! v (>> v 7))
-        (if (or (and (= v 0) (= (& byte (: 0x40 u8)) (: 0 u8)))
-                (and (= v -1) (!= (& byte (: 0x40 u8)) (: 0 u8))))
-            (do (emit8! b byte) (break))
-            (emit8! b (| byte (: 0x80 u8))))))))
+    (loop (let [byte (cast u8 (& v 0x7f))]
+            (set! v (>> v 7))
+            (if (or (and (= v 0) (= (& byte (: 0x40 u8)) (: 0 u8)))
+                    (and (= v -1) (!= (& byte (: 0x40 u8)) (: 0 u8))))
+                (do (emit8! b byte) (break))
+                (emit8! b (| byte (: 0x80 u8))))))))

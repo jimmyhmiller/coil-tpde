@@ -12,8 +12,10 @@
 ;;; How a value is materialized. A normal value has an assignment; the others
 ;;; are recomputed at each use and take no part in liveness.
 (const VAL-NORMAL 0)
+
 (const VAL-CONST 1)  ; `val-const-part` gives each part's bits
-(const VAL-SYM 2)    ; the address of symbol `val-sym` + `val-sym-addend`
+
+(const VAL-SYM 2)  ; the address of symbol `val-sym` + `val-sym-addend`
 
 (deftrait IRCompiler [Self]
   ;;; Number of parts of `v` (at least 1).
@@ -43,7 +45,8 @@
   ;;; Whether `v` may receive a fixed register at all.
   (allow-fixed? [(self (ptr Self)) (v u32)] (-> bool))
   ;;; Compile one instruction. False is a failure.
-  (compile-inst! [(self (ptr Self)) (c (ptr (Compiler Self))) (inst u32)] (-> bool))
+  (compile-inst! [(self (ptr Self)) (c (ptr (Compiler Self))) (inst u32)]
+    (-> bool))
   ;;; Called once per function before its body, to set up function-level state
   ;;; (after the frame and arguments). False is a failure.
   (begin-func! [(self (ptr Self)) (c (ptr (Compiler Self))) (f u32)] (-> bool)))

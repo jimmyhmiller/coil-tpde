@@ -18,14 +18,17 @@
   [(level u32)
    (parent u32)
    ; [begin, end[ in block indices
-   (begin u32) (end u32)
+   (begin u32)
+   (end u32)
    ; while building the loop tree, the number of blocks in the loop
    (num-blocks u32)
-   (definitions u32) (definitions-in-childs u32)])
+   (definitions u32)
+   (definitions-in-childs u32)])
 
 (defstruct LivenessInfo
-  [; [first, last] in block indices
-   (first u32) (last u32)
+  ; [first, last] in block indices
+  [(first u32)
+   (last u32)
    (ref-count u32)
    (lowest-common-loop u32)
    ; the value may not be freed before the end of `last`, even when its
@@ -34,9 +37,11 @@
    (epoch u16)])
 
 ; identify-loops scratch, per RPO index
-(defstruct LoopBlockInfo [(traversed bool) (self-loop bool) (dfsp-pos u32) (iloop-header u32)])
+(defstruct LoopBlockInfo
+  [(traversed bool) (self-loop bool) (dfsp-pos u32) (iloop-header u32)])
 
-(defstruct TravState [(block-idx u32) (dfsp-pos u32) (nh u32) (state u8) (succ-i u32) (succ-n u32)])
+(defstruct TravState
+  [(block-idx u32) (dfsp-pos u32) (nh u32) (state u8) (succ-i u32) (succ-n u32)])
 
 (defstruct BlockLoopInfo [(loop-idx u32) (rpo-idx u32)])
 
@@ -62,9 +67,14 @@
    (trav (ArrayList TravState))
    (loop-blocks (ArrayList BlockLoopInfo))])
 
-(defn none32 [] (-> u32) (: 0xFFFFFFFF u32))
-(defn i64-of [(x u32)] (-> i64) (cast i64 x))
-(defn u32-of [(x i64)] (-> u32) (cast u32 x))
+(defn none32 [] (-> u32)
+  (: 0xFFFFFFFF u32))
+
+(defn i64-of [(x u32)] (-> i64)
+  (cast i64 x))
+
+(defn u32-of [(x i64)] (-> u32)
+  (cast u32 x))
 
 (defn resize-zeroed! [T] [(xs (mut (ArrayList T))) (n i64)] (-> void)
   (clear! (mut xs))
@@ -73,21 +83,22 @@
 (impl [A] (Analyzer A)
   (new [(ad (ptr A))] (-> (Analyzer A))
     (let [a (malloc-allocator)]
-      (Analyzer :ad ad
-                :block-layout (ArrayList::new [u32] a)
-                :block-loop-map (ArrayList::new [u32] a)
-                :loops (ArrayList::new [Loop] a)
-                :liveness (ArrayList::new [LivenessInfo] a)
-                :liveness-epoch (: 0 u16)
-                :liveness-max-value (: 0 u32)
-                :num-insts (: 0 u32)
-                :rpo (ArrayList::new [u32] a)
-                :stack (ArrayList::new [u32] a)
-                :loop-parent (ArrayList::new [u32] a)
-                :loop-heads (ArrayList::new [bool] a)
-                :loop-infos (ArrayList::new [LoopBlockInfo] a)
-                :trav (ArrayList::new [TravState] a)
-                :loop-blocks (ArrayList::new [BlockLoopInfo] a)))))
+      (Analyzer
+        :ad ad
+        :block-layout (ArrayList::new [u32] a)
+        :block-loop-map (ArrayList::new [u32] a)
+        :loops (ArrayList::new [Loop] a)
+        :liveness (ArrayList::new [LivenessInfo] a)
+        :liveness-epoch (: 0 u16)
+        :liveness-max-value (: 0 u32)
+        :num-insts (: 0 u32)
+        :rpo (ArrayList::new [u32] a)
+        :stack (ArrayList::new [u32] a)
+        :loop-parent (ArrayList::new [u32] a)
+        :loop-heads (ArrayList::new [bool] a)
+        :loop-infos (ArrayList::new [LoopBlockInfo] a)
+        :trav (ArrayList::new [TravState] a)
+        :loop-blocks (ArrayList::new [BlockLoopInfo] a)))))
 
 ;;; Analyze the function the adaptor has switched to. Previous results are
 ;;; discarded.
@@ -109,7 +120,8 @@
   (build-block-layout! (mut an))
   (compute-liveness! (mut an)))
 
-(defn block-count [A] [(an (ptr (Analyzer A)))] (-> u32) (u32-of (len (.block-layout an))))
+(defn block-count [A] [(an (ptr (Analyzer A)))] (-> u32)
+  (u32-of (len (.block-layout an))))
 
 ;;; The block at a block index; INVALID for one past the last.
 (defn block-ref [A] [(an (ptr (Analyzer A))) (idx u32)] (-> u32)
@@ -120,7 +132,8 @@
 (defn block-idx [(A IRAdaptor)] [(an (ptr (Analyzer A))) (b u32)] (-> u32)
   (block-info (.ad an) b))
 
-(defn liveness-info [A] [(an (ptr (Analyzer A))) (val-idx u32)] (-> (ptr LivenessInfo))
+(defn liveness-info [A] [(an (ptr (Analyzer A))) (val-idx u32)]
+  (-> (ptr LivenessInfo))
   (elem (mut (.liveness an)) (i64-of val-idx)))
 
 (defn block-loop-idx [A] [(an (ptr (Analyzer A))) (idx u32)] (-> u32)
@@ -129,10 +142,12 @@
 (defn loop-at [A] [(an (ptr (Analyzer A))) (idx u32)] (-> (ptr Loop))
   (elem (mut (.loops an)) (i64-of idx)))
 
-(defn block-has-multiple-incoming? [(A IRAdaptor)] [(an (ptr (Analyzer A))) (b u32)] (-> bool)
+(defn block-has-multiple-incoming? [(A IRAdaptor)] [(an (ptr (Analyzer A)))
+                                                    (b u32)] (-> bool)
   (= (& (block-info2 (.ad an) b) (: 3 u32)) (: 2 u32)))
 
-(defn block-has-phis? [(A IRAdaptor)] [(an (ptr (Analyzer A))) (b u32)] (-> bool)
+(defn block-has-phis? [(A IRAdaptor)] [(an (ptr (Analyzer A))) (b u32)]
+  (-> bool)
   (!= (& (block-info2 (.ad an) b) (: 16 u32)) (: 0 u32)))
 
 ; ---- printing ----
@@ -140,16 +155,32 @@
 ; grows the stack every iteration (coil-bugs: "println in a loop body grows the
 ; stack every iteration").
 
-(defn print-index-name [(i i64) (name (slice u8))] (-> void) (println "  {}: {}" i name))
+(defn print-index-name [(i i64) (name (slice u8))] (-> void)
+  (println "  {}: {}" i name))
 
 (defn print-loop-line [(i i64) (l Loop)] (-> void)
-  (println "  {}: level {}, parent {}, {}->{}" i (.level l) (.parent l) (.begin l) (.end l)))
+  (println "  {}: level {}, parent {}, {}->{}"
+           i
+           (.level l)
+           (.parent l)
+           (.begin l)
+           (.end l)))
 
-(defn print-ignored-line [(i i64)] (-> void) (println "  {}: ignored" i))
+(defn print-ignored-line [(i i64)] (-> void)
+  (println "  {}: ignored" i))
 
-(defn print-live-line [(i i64) (info LivenessInfo) (first (slice u8)) (last (slice u8))] (-> void)
-  (println "  {}: {} refs, {}->{} ({}->{}), lf: {}" i (.ref-count info) (.first info) (.last info)
-           first last (.last-full info)))
+(defn print-live-line [(i i64)
+                       (info LivenessInfo)
+                       (first (slice u8))
+                       (last (slice u8))] (-> void)
+  (println "  {}: {} refs, {}->{} ({}->{}), lf: {}"
+           i
+           (.ref-count info)
+           (.first info)
+           (.last info)
+           first
+           last
+           (.last-full info)))
 
 (defn print-rpo [(A IRAdaptor)] [(an (mut (Analyzer A)))] (-> void)
   ; building the RPO clobbers the block data, so save and restore it
@@ -183,7 +214,8 @@
       (let [info (get (.liveness an) i)]
         (if (!= (.epoch info) (.liveness-epoch an))
             (print-ignored-line i)
-            (print-live-line i info
+            (print-live-line i
+                             info
                              (block-name ad (block-ref an (.first info)))
                              (block-name ad (block-ref an (.last info)))))))))
 
@@ -198,7 +230,9 @@
 
 ;; Sort `stack[start..]` by block-info. The keys are distinct block indices
 ;; (or the same block twice), so the order is the same as TPDE's std::sort.
-(defn sort-by-info! [(A IRAdaptor)] [(ad (ptr A)) (stack (mut (ArrayList u32))) (start i64)] (-> void)
+(defn sort-by-info! [(A IRAdaptor)] [(ad (ptr A))
+                                     (stack (mut (ArrayList u32)))
+                                     (start i64)] (-> void)
   (let [n (len stack)]
     (if (<= (- n start) 16)
         (for i (range (+ start 1) n)
@@ -211,22 +245,32 @@
             (set! (mut stack) j x)))
         (heap-sort-by-info! ad (mut stack) start))))
 
-(defn sift-down! [(A IRAdaptor)] [(ad (ptr A)) (s (mut (ArrayList u32))) (base i64) (root0 i64) (n i64)] (-> void)
+(defn sift-down! [(A IRAdaptor)] [(ad (ptr A))
+                                  (s (mut (ArrayList u32)))
+                                  (base i64)
+                                  (root0 i64)
+                                  (n i64)] (-> void)
   (let [(mut root) root0]
-    (loop
-      (let [child (+ (* 2 root) 1)]
-        (when (>= child n) (break))
-        (let [right (+ child 1)
-              big (if (and (< right n)
-                           (> (block-info ad (get s (+ base right))) (block-info ad (get s (+ base child)))))
-                      right child)]
-          (when (<= (block-info ad (get s (+ base big))) (block-info ad (get s (+ base root)))) (break))
-          (let [t (get s (+ base root))]
-            (set! (mut s) (+ base root) (get s (+ base big)))
-            (set! (mut s) (+ base big) t))
-          (set! root big))))))
+    (loop (let [child (+ (* 2 root) 1)]
+            (when (>= child n) (break))
+            (let [right (+ child 1)
+                  big
+                    (if (and (< right n)
+                             (> (block-info ad (get s (+ base right)))
+                                (block-info ad (get s (+ base child)))))
+                        right
+                        child)]
+              (when (<= (block-info ad (get s (+ base big)))
+                        (block-info ad (get s (+ base root))))
+                (break))
+              (let [t (get s (+ base root))]
+                (set! (mut s) (+ base root) (get s (+ base big)))
+                (set! (mut s) (+ base big) t))
+              (set! root big))))))
 
-(defn heap-sort-by-info! [(A IRAdaptor)] [(ad (ptr A)) (s (mut (ArrayList u32))) (base i64)] (-> void)
+(defn heap-sort-by-info! [(A IRAdaptor)] [(ad (ptr A))
+                                          (s (mut (ArrayList u32)))
+                                          (base i64)] (-> void)
   (let [n (- (len s) base)
         (mut i) (- (/ n 2) 1)]
     (while (>= i 0)
@@ -248,8 +292,7 @@
 ;; children were pushed, 0b1000 the block is in the RPO.
 (defn build-rpo-block-order! [(A IRAdaptor)] [(an (mut (Analyzer A)))] (-> void)
   (let [ad (.ad an)
-        num-blocks (cur-block-count ad)
-        ]
+        num-blocks (cur-block-count ad)]
     (for i (range 0 (i64-of num-blocks))
       (let [b (cur-block ad (u32-of i))]
         (block-set-info! ad b (u32-of i))
@@ -261,59 +304,76 @@
       (while (> (len (.stack an)) 0)
         (let [cur (get (.stack an) (- (len (.stack an)) 1))
               info2 (block-info2 ad cur)]
-          (cond
-            (!= (& info2 (: 8 u32)) (: 0 u32))
-              (pop! (mut (.stack an)))
-            (!= (& info2 (: 4 u32)) (: 0 u32))
-              (do (pop! (mut (.stack an)))
-                  (block-set-info! ad cur (u32-of rpo-idx))
-                  (block-set-info2! ad cur (| (block-info2 ad cur) (: 8 u32)))
-                  (set! (mut (.rpo an)) rpo-idx cur)
-                  (set! rpo-idx (- rpo-idx 1)))
-            :else
-              (do (block-set-info2! ad cur (| info2 (: 4 u32)))
-                  (let [start (len (.stack an))
-                        nsucc (block-succ-count ad cur)]
-                    (for si (range 0 (i64-of nsucc))
-                      (let [succ (block-succ ad cur (u32-of si))
-                            info (block-info2 ad succ)]
-                        (if (!= (& info (: 3 u32)) (: 0 u32))
-                            (when (= (& info (: 3 u32)) (: 1 u32))
-                              ; a second incoming edge
-                              (block-set-info2! ad succ (| (& info (^ (: 3 u32) (none32))) (: 2 u32))))
-                            (block-set-info2! ad succ (| info (: 1 u32))))
-                        (when (= (& (block-info2 ad succ) (: 12 u32)) (: 0 u32))
-                          (push! (mut (.stack an)) succ))))
-                    (let [pushed (- (len (.stack an)) start)]
-                      (cond (<= pushed 1) 0
-                            (= pushed 2)
-                              (let [x (get (.stack an) start) y (get (.stack an) (+ start 1))]
-                                (when (> (block-info ad x) (block-info ad y))
-                                  (set! (mut (.stack an)) start y)
-                                  (set! (mut (.stack an)) (+ start 1) x))
-                                0)
-                            :else (do (sort-by-info! ad (mut (.stack an)) start) 0))))))))
+          (cond (!= (& info2 (: 8 u32)) (: 0 u32)) (pop! (mut (.stack an)))
+                (!= (& info2 (: 4 u32)) (: 0 u32))
+                  (do
+                    (pop! (mut (.stack an)))
+                    (block-set-info! ad cur (u32-of rpo-idx))
+                    (block-set-info2! ad cur (| (block-info2 ad cur) (: 8 u32)))
+                    (set! (mut (.rpo an)) rpo-idx cur)
+                    (set! rpo-idx (- rpo-idx 1)))
+                :else
+                  (do
+                    (block-set-info2! ad cur (| info2 (: 4 u32)))
+                    (let [start (len (.stack an))
+                          nsucc (block-succ-count ad cur)]
+                      (for si (range 0 (i64-of nsucc))
+                        (let [succ (block-succ ad cur (u32-of si))
+                              info (block-info2 ad succ)]
+                          (if (!= (& info (: 3 u32)) (: 0 u32))
+                              (when (= (& info (: 3 u32)) (: 1 u32))
+                                ; a second incoming edge
+                                (block-set-info2! ad
+                                                  succ
+                                                  (| (& info
+                                                        (^ (: 3 u32) (none32)))
+                                                     (: 2 u32))))
+                              (block-set-info2! ad succ (| info (: 1 u32))))
+                          (when (= (& (block-info2 ad succ) (: 12 u32))
+                                   (: 0 u32))
+                            (push! (mut (.stack an)) succ))))
+                      (let [pushed (- (len (.stack an)) start)]
+                        (cond (<= pushed 1) 0
+                              (= pushed 2)
+                                (let [x (get (.stack an) start)
+                                      y (get (.stack an) (+ start 1))]
+                                  (when (> (block-info ad x) (block-info ad y))
+                                    (set! (mut (.stack an)) start y)
+                                    (set! (mut (.stack an)) (+ start 1) x))
+                                  0)
+                              :else
+                                (do
+                                  (sort-by-info! ad (mut (.stack an)) start)
+                                  0))))))))
       (when (!= rpo-idx -1)
         ; unreachable blocks left a gap at the front; shift and renumber
-        (let [skip (+ rpo-idx 1) n (len (.rpo an))]
-          (for i (range skip n) (set! (mut (.rpo an)) (- i skip) (get (.rpo an) i)))
+        (let [skip (+ rpo-idx 1)
+              n (len (.rpo an))]
+          (for i (range skip n)
+            (set! (mut (.rpo an)) (- i skip) (get (.rpo an) i)))
           (for _ (range 0 skip) (pop! (mut (.rpo an))))
-          (for i (range 0 (len (.rpo an))) (block-set-info! ad (get (.rpo an) i) (u32-of i))))))))
+          (for i (range 0 (len (.rpo an)))
+            (block-set-info! ad (get (.rpo an) i) (u32-of i))))))))
 
-(defn loop-info-at [(an (ptr (ArrayList LoopBlockInfo))) (i u32)] (-> (ptr LoopBlockInfo))
+(defn loop-info-at [(an (ptr (ArrayList LoopBlockInfo))) (i u32)]
+  (-> (ptr LoopBlockInfo))
   (elem an (i64-of i)))
 
-(defn tag-lhead! [(infos (ptr (ArrayList LoopBlockInfo))) (b u32) (h u32)] (-> void)
+(defn tag-lhead! [(infos (ptr (ArrayList LoopBlockInfo))) (b u32) (h u32)]
+  (-> void)
   (when (not (or (= b h) (= h (: 0 u32))))
-    (let [(mut cur1) b (mut cur2) h]
+    (let [(mut cur1) b
+          (mut cur2) h]
       (block :done
         (while (!= (.iloop-header (loop-info-at infos cur1)) (: 0 u32))
           (let [ih (.iloop-header (loop-info-at infos cur1))]
             (when (= ih cur2) (return-from :done 0))
-            (if (< (.dfsp-pos (loop-info-at infos ih)) (.dfsp-pos (loop-info-at infos cur2)))
-                (do (set! (.iloop-header (loop-info-at infos cur1)) cur2)
-                    (set! cur1 cur2)
-                    (set! cur2 ih))
+            (if (< (.dfsp-pos (loop-info-at infos ih))
+                   (.dfsp-pos (loop-info-at infos cur2)))
+                (do
+                  (set! (.iloop-header (loop-info-at infos cur1)) cur2)
+                  (set! cur1 cur2)
+                  (set! cur2 ih))
                 (set! cur1 ih))))
         (set! (.iloop-header (loop-info-at infos cur1)) cur2)
         0))))
@@ -324,14 +384,19 @@
   (let [ad (.ad an)
         rpo (cast (ptr (ArrayList u32)) (mut (.rpo an)))
         n (len (load rpo))
-        infos (cast (ptr (ArrayList LoopBlockInfo)) (mut (.loop-infos an)))
-        ]
+        infos (cast (ptr (ArrayList LoopBlockInfo)) (mut (.loop-infos an)))]
     (resize-zeroed! (mut (.loop-parent an)) n)
     (resize-zeroed! (mut (.loop-heads an)) n)
     (resize-zeroed! (mut (.loop-infos an)) n)
     (clear! (mut (.trav an)))
-    (push! (mut (.trav an)) (TravState :block-idx (: 0 u32) :dfsp-pos (: 1 u32) :nh (: 0 u32) :state (: 0 u8)
-                           :succ-i (: 0 u32) :succ-n (block-succ-count ad (get (load rpo) 0))))
+    (push! (mut (.trav an))
+           (TravState
+             :block-idx (: 0 u32)
+             :dfsp-pos (: 1 u32)
+             :nh (: 0 u32)
+             :state (: 0 u8)
+             :succ-i (: 0 u32)
+             :succ-n (block-succ-count ad (get (load rpo) 0))))
     (while (> (len (.trav an)) 0)
       (let [top (- (len (.trav an)) 1)
             st (elem (mut (.trav an)) top)
@@ -346,39 +411,60 @@
           (set! (.succ-i st) (+ (.succ-i st) (: 1 u32)))
           (set! (.state st) (: 1 u8)))
         (let [recursed
-              (block :succs
-                (while (< (.succ-i st) (.succ-n st))
-                  (let [succ-idx (block-info ad (block-succ ad bref (.succ-i st)))]
-                    (when (= succ-idx block-idx)
-                      (set! (.self-loop (loop-info-at infos block-idx)) true))
-                    (if (.traversed (loop-info-at infos succ-idx))
-                        (do (if (> (.dfsp-pos (loop-info-at infos succ-idx)) (: 0 u32))
+                (block :succs
+                  (while (< (.succ-i st) (.succ-n st))
+                    (let [succ-idx
+                            (block-info ad (block-succ ad bref (.succ-i st)))]
+                      (when (= succ-idx block-idx)
+                        (set! (.self-loop (loop-info-at infos block-idx)) true))
+                      (if (.traversed (loop-info-at infos succ-idx))
+                          (do
+                            (if (> (.dfsp-pos (loop-info-at infos succ-idx))
+                                   (: 0 u32))
                                 (tag-lhead! infos block-idx succ-idx)
-                                (when (!= (.iloop-header (loop-info-at infos succ-idx)) (: 0 u32))
-                                  (let [(mut h-idx) (.iloop-header (loop-info-at infos succ-idx))]
-                                    (if (> (.dfsp-pos (loop-info-at infos h-idx)) (: 0 u32))
+                                (when (!= (.iloop-header (loop-info-at infos
+                                                                       succ-idx))
+                                          (: 0 u32))
+                                  (let [(mut h-idx)
+                                          (.iloop-header (loop-info-at infos
+                                                                       succ-idx))]
+                                    (if (> (.dfsp-pos (loop-info-at infos h-idx))
+                                           (: 0 u32))
                                         (tag-lhead! infos block-idx h-idx)
                                         (block :up
-                                          (while (!= (.iloop-header (loop-info-at infos h-idx)) (: 0 u32))
-                                            (set! h-idx (.iloop-header (loop-info-at infos h-idx)))
-                                            (when (> (.dfsp-pos (loop-info-at infos h-idx)) (: 0 u32))
+                                          (while (!= (.iloop-header (loop-info-at infos
+                                                                                  h-idx))
+                                                     (: 0 u32))
+                                            (set! h-idx
+                                                  (.iloop-header (loop-info-at infos
+                                                                               h-idx)))
+                                            (when (> (.dfsp-pos (loop-info-at infos
+                                                                              h-idx))
+                                                     (: 0 u32))
                                               (tag-lhead! infos block-idx h-idx)
                                               (return-from :up 0)))
                                           0)))))
                             (set! (.succ-i st) (+ (.succ-i st) (: 1 u32))))
-                        (do (set! (.state st) (: 2 u8))
+                          (do
+                            (set! (.state st) (: 2 u8))
                             (let [dfsp (+ (.dfsp-pos st) (: 1 u32))
                                   sref (get (load rpo) (i64-of succ-idx))]
-                              (push! (mut (.trav an)) (TravState :block-idx succ-idx :dfsp-pos dfsp :nh (: 0 u32)
-                                                     :state (: 0 u8) :succ-i (: 0 u32)
-                                                     :succ-n (block-succ-count ad sref))))
+                              (push! (mut (.trav an))
+                                     (TravState
+                                       :block-idx succ-idx
+                                       :dfsp-pos dfsp
+                                       :nh (: 0 u32)
+                                       :state (: 0 u8)
+                                       :succ-i (: 0 u32)
+                                       :succ-n (block-succ-count ad sref))))
                             (return-from :succs true)))))
-                false)]
+                  false)]
           (when (not recursed)
             (set! (.dfsp-pos (loop-info-at infos block-idx)) (: 0 u32))
             (pop! (mut (.trav an)))
             (when (> (len (.trav an)) 0)
-              (set! (.nh (elem (mut (.trav an)) (- (len (.trav an)) 1))) (.iloop-header (loop-info-at infos block-idx))))))))
+              (set! (.nh (elem (mut (.trav an)) (- (len (.trav an)) 1)))
+                    (.iloop-header (loop-info-at infos block-idx))))))))
     (for i (range 0 n)
       (let [info (loop-info-at infos (u32-of i))]
         (when (!= (.iloop-header info) (: 0 u32))
@@ -388,8 +474,14 @@
           (set! (mut (.loop-heads an)) i true))))))
 
 (defn new-loop [(level u32) (parent u32)] (-> Loop)
-  (Loop :level level :parent parent :begin (none32) :end (none32) :num-blocks (: 0 u32)
-        :definitions (: 0 u32) :definitions-in-childs (: 0 u32)))
+  (Loop
+    :level level
+    :parent parent
+    :begin (none32)
+    :end (none32)
+    :num-blocks (: 0 u32)
+    :definitions (: 0 u32)
+    :definitions-in-childs (: 0 u32)))
 
 ;; The loop of the block at RPO index `i`'s loop parent, creating it (and,
 ;; with irreducible control flow, its own parents) on first sight.
@@ -400,9 +492,11 @@
         known
         (let [parent-loop (build-or-get-parent-loop! (mut an) parent)
               loop-idx (u32-of (len (.loops an)))
-              level (+ (.level (get (.loops an) (i64-of parent-loop))) (: 1 u32))]
+              level
+                (+ (.level (get (.loops an) (i64-of parent-loop))) (: 1 u32))]
           (push! (mut (.loops an)) (new-loop level parent-loop))
-          (set! (.loop-idx (elem (mut (.loop-blocks an)) (i64-of parent))) loop-idx)
+          (set! (.loop-idx (elem (mut (.loop-blocks an)) (i64-of parent)))
+                loop-idx)
           loop-idx))))
 
 (defn layout-loop! [A] [(an (mut (Analyzer A))) (loop-idx u32)] (-> void)
@@ -417,12 +511,14 @@
       (set! (.begin l) loop-begin)
       (set! (.end l) loop-begin))))
 
-(defn build-loop-tree-and-block-layout! [(A IRAdaptor)] [(an (mut (Analyzer A)))] (-> void)
+(defn build-loop-tree-and-block-layout! [(A IRAdaptor)] [(an (mut (Analyzer A)))]
+  (-> void)
   (let [ad (.ad an)
         n (len (.rpo an))]
     (clear! (mut (.loop-blocks an)))
     (for i (range 0 n)
-      (push! (mut (.loop-blocks an)) (BlockLoopInfo :loop-idx (none32) :rpo-idx (u32-of i))))
+      (push! (mut (.loop-blocks an))
+             (BlockLoopInfo :loop-idx (none32) :rpo-idx (u32-of i))))
     ; the entry heads the top-level loop
     (clear! (mut (.loops an)))
     (let [(mut root) (new-loop (: 0 u32) (: 0 u32))]
@@ -436,14 +532,17 @@
             (let [(mut loop-idx) (.loop-idx (get (.loop-blocks an) i))]
               (when (= loop-idx (none32))
                 (set! loop-idx (u32-of (len (.loops an))))
-                (let [level (+ (.level (get (.loops an) (i64-of parent-loop))) (: 1 u32))]
+                (let [level
+                        (+ (.level (get (.loops an) (i64-of parent-loop)))
+                           (: 1 u32))]
                   (push! (mut (.loops an)) (new-loop level parent-loop)))
                 (set! (.loop-idx (elem (mut (.loop-blocks an)) i)) loop-idx))
               (let [l (elem (mut (.loops an)) (i64-of loop-idx))]
                 (set! (.num-blocks l) (+ (.num-blocks l) (: 1 u32)))))
-            (do (set! (.loop-idx (elem (mut (.loop-blocks an)) i)) parent-loop)
-                (let [l (elem (mut (.loops an)) (i64-of parent-loop))]
-                  (set! (.num-blocks l) (+ (.num-blocks l) (: 1 u32))))))))
+            (do
+              (set! (.loop-idx (elem (mut (.loop-blocks an)) i)) parent-loop)
+              (let [l (elem (mut (.loops an)) (i64-of parent-loop))]
+                (set! (.num-blocks l) (+ (.num-blocks l) (: 1 u32))))))))
     ; accumulate block counts children-first (parents are always pushed first)
     (let [(mut i) (- (len (.loops an)) 1)]
       (while (> i 0)
@@ -473,7 +572,9 @@
 
 ; ---- liveness ----
 
-(defn update-for-block-only! [(l (ptr LivenessInfo)) (block-idx u32) (check-backwards bool)] (-> void)
+(defn update-for-block-only! [(l (ptr LivenessInfo))
+                              (block-idx u32)
+                              (check-backwards bool)] (-> void)
   (let [old-first (.first l)
         old-last (.last l)
         new-first (if (< block-idx old-first) block-idx old-first)
@@ -486,7 +587,8 @@
           (!= old-last new-last) (set! (.last-full l) false)
           :else 0)))
 
-(defn update-for-loop! [(l (ptr LivenessInfo)) (lp Loop) (check-backwards bool)] (-> void)
+(defn update-for-loop! [(l (ptr LivenessInfo)) (lp Loop) (check-backwards bool)]
+  (-> void)
   (let [old-first (.first l)
         old-last (.last l)
         loop-last (- (.end lp) (: 1 u32))
@@ -497,26 +599,30 @@
     (when (or (!= old-last new-last) check-backwards)
       (set! (.last-full l) true))))
 
-(defn visit! [(A IRAdaptor)] [(an (mut (Analyzer A))) (value u32) (block-idx u32)] (-> void)
+(defn visit! [(A IRAdaptor)] [(an (mut (Analyzer A)))
+                              (value u32)
+                              (block-idx u32)] (-> void)
   (let [ad (.ad an)]
     (when (not (val-ignore-in-liveness? ad value))
       (let [val-idx (val-local-idx ad value)
             l (elem (mut (.liveness an)) (i64-of val-idx))
             block-loop-idx (get (.block-loop-map an) (i64-of block-idx))]
         (if (!= (.epoch l) (.liveness-epoch an))
-            (do (set! (.first l) block-idx)
-                (set! (.last l) block-idx)
-                (set! (.ref-count l) (: 1 u32))
-                (set! (.lowest-common-loop l) block-loop-idx)
-                (set! (.last-full l) false)
-                (set! (.epoch l) (.liveness-epoch an)))
+            (do
+              (set! (.first l) block-idx)
+              (set! (.last l) block-idx)
+              (set! (.ref-count l) (: 1 u32))
+              (set! (.lowest-common-loop l) block-loop-idx)
+              (set! (.last-full l) false)
+              (set! (.epoch l) (.liveness-epoch an)))
             (do
               (set! (.ref-count l) (+ (.ref-count l) (: 1 u32)))
               (block :done
                 (when (= (.lowest-common-loop l) block-loop-idx)
                   (update-for-block-only! l block-idx false)
                   (return-from :done 0))
-                (let [liveness-loop (get (.loops an) (i64-of (.lowest-common-loop l)))
+                (let [liveness-loop
+                        (get (.loops an) (i64-of (.lowest-common-loop l)))
                       block-loop (get (.loops an) (i64-of block-loop-idx))]
                   (when (and (< (.level liveness-loop) (.level block-loop))
                              (< (.begin block-loop) (.end liveness-loop)))
@@ -526,9 +632,12 @@
                           (mut cur-idx) block-loop-idx
                           (mut cur-level) (.level block-loop)]
                       (while (!= cur-level target-level)
-                        (set! cur-idx (.parent (get (.loops an) (i64-of cur-idx))))
+                        (set! cur-idx
+                              (.parent (get (.loops an) (i64-of cur-idx))))
                         (set! cur-level (- cur-level (: 1 u32))))
-                      (update-for-loop! l (get (.loops an) (i64-of cur-idx)) false)
+                      (update-for-loop! l
+                                        (get (.loops an) (i64-of cur-idx))
+                                        false)
                       (return-from :done 0)))
                   ; otherwise widen the lowest common loop to hold both
                   (let [(mut lhs) (.lowest-common-loop l)
@@ -538,17 +647,33 @@
                     (while (!= lhs rhs)
                       (let [ll (.level (get (.loops an) (i64-of lhs)))
                             rl (.level (get (.loops an) (i64-of rhs)))]
-                        (cond (> ll rl) (do (set! prev-lhs lhs) (set! lhs (.parent (get (.loops an) (i64-of lhs)))))
-                              (< ll rl) (do (set! prev-rhs rhs) (set! rhs (.parent (get (.loops an) (i64-of rhs)))))
-                              :else (do (set! prev-lhs lhs)
-                                        (set! prev-rhs rhs)
-                                        (set! lhs (.parent (get (.loops an) (i64-of lhs))))
-                                        (set! rhs (.parent (get (.loops an) (i64-of rhs))))))))
+                        (cond (> ll rl)
+                                (do
+                                  (set! prev-lhs lhs)
+                                  (set! lhs
+                                        (.parent (get (.loops an) (i64-of lhs)))))
+                              (< ll rl)
+                                (do
+                                  (set! prev-rhs rhs)
+                                  (set! rhs
+                                        (.parent (get (.loops an) (i64-of rhs)))))
+                              :else
+                                (do
+                                  (set! prev-lhs lhs)
+                                  (set! prev-rhs rhs)
+                                  (set! lhs
+                                        (.parent (get (.loops an) (i64-of lhs))))
+                                  (set! rhs
+                                        (.parent (get (.loops an) (i64-of rhs))))))))
                     (set! (.lowest-common-loop l) lhs)
-                    (update-for-loop! l (get (.loops an) (i64-of prev-lhs)) false)
+                    (update-for-loop! l
+                                      (get (.loops an) (i64-of prev-lhs))
+                                      false)
                     (if (= lhs block-loop-idx)
                         (update-for-block-only! l block-idx true)
-                        (update-for-loop! l (get (.loops an) (i64-of prev-rhs)) true))
+                        (update-for-loop! l
+                                          (get (.loops an) (i64-of prev-rhs))
+                                          true))
                     0)))))))))
 
 ;; Liveness in one pass over the layout ("Linear Time Liveness Analysis",
@@ -603,5 +728,6 @@
         (let [l (get (.loops an) idx)
               p (elem (mut (.loops an)) (i64-of (.parent l)))]
           (set! (.definitions-in-childs p)
-                (+ (.definitions-in-childs p) (+ (.definitions-in-childs l) (.definitions l)))))
+                (+ (.definitions-in-childs p)
+                   (+ (.definitions-in-childs l) (.definitions l)))))
         (set! idx (- idx 1))))))

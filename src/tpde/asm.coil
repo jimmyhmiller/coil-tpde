@@ -17,27 +17,44 @@
 (import "coil.result" :use [Ok Err])
 
 (const SEC-TEXT 0)
-(const SEC-CONST 1)      ; read-only data without relocations
-(const SEC-CSTRING 2)    ; NUL-terminated string literals (merged by the linker)
-(const SEC-DATA 3)       ; writable data
-(const SEC-DATA-CONST 4) ; read-only after relocation
-(const SEC-BSS 5)        ; zero-initialized, no file contents
+
+(const SEC-CONST 1)  ; read-only data without relocations
+
+(const SEC-CSTRING 2)  ; NUL-terminated string literals (merged by the linker)
+
+(const SEC-DATA 3)  ; writable data
+
+(const SEC-DATA-CONST 4)  ; read-only after relocation
+
+(const SEC-BSS 5)  ; zero-initialized, no file contents
+
 (const SEC-COUNT 6)
 
 (const BIND-LOCAL 0)
+
 (const BIND-GLOBAL 1)
+
 (const BIND-WEAK 2)
 
 ; relocation kinds
-(const R-BRANCH26 0)      ; b/bl imm26
-(const R-PAGE21 1)        ; adrp
-(const R-PAGEOFF12 2)     ; add / ldr / str :lo12:
-(const R-GOT-PAGE21 3)    ; adrp of the GOT entry
-(const R-GOT-PAGEOFF12 4) ; ldr of the GOT entry
-(const R-ABS64 5)         ; 8-byte absolute address in data
-(const R-PCREL32 6)       ; x86-64 rip-relative disp32
-(const R-PLT32 7)         ; x86-64 call/jmp rel32
-(const R-GOTPCREL32 8)    ; x86-64 rip-relative GOT disp32
+(const R-BRANCH26 0)  ; b/bl imm26
+
+(const R-PAGE21 1)  ; adrp
+
+(const R-PAGEOFF12 2)  ; add / ldr / str :lo12:
+
+(const R-GOT-PAGE21 3)  ; adrp of the GOT entry
+
+(const R-GOT-PAGEOFF12 4)  ; ldr of the GOT entry
+
+(const R-ABS64 5)  ; 8-byte absolute address in data
+
+(const R-PCREL32 6)  ; x86-64 rip-relative disp32
+
+(const R-PLT32 7)  ; x86-64 call/jmp rel32
+
+(const R-GOTPCREL32 8)  ; x86-64 rip-relative GOT disp32
+
 (const R-ABS32 9)
 
 (defstruct Section
@@ -69,7 +86,9 @@
 ;;; symbols while another adds them. Adding takes `sym-lock` once `share!` has
 ;;; made the assembler shared between threads.
 (const SYM-CHUNK-LOG 12)
+
 (const SYM-CHUNK 4096)
+
 ;; 1024 chunks: 4M symbols (the Coil compiler has ~60k); the table is 24 KB
 (const SYM-MAX-CHUNKS 1024)
 
@@ -84,8 +103,15 @@
    (rt-names (ArrayList (slice u8)))
    (rt-syms (ArrayList u32))])
 
-(defn mk-section [(seg (slice u8)) (sect (slice u8)) (align i64) (flags u32)] (-> Section)
-  (Section :segname seg :sectname sect :data (Buf::new) :align align :flags flags :zsize 0))
+(defn mk-section [(seg (slice u8)) (sect (slice u8)) (align i64) (flags u32)]
+  (-> Section)
+  (Section
+    :segname seg
+    :sectname sect
+    :data (Buf::new)
+    :align align
+    :flags flags
+    :zsize 0))
 
 (impl Asm
   (new [] (-> Asm)
@@ -99,16 +125,23 @@
       (push! (mut s) (mk-section "__DATA" "__bss" 4 (: 1 u32)))
       (let [(mut chunks) (ArrayList::new [(ArrayList Symbol)] a)]
         (reserve! (mut chunks) SYM-MAX-CHUNKS)
-        (Asm :sects s :sym-chunks chunks :nsyms 0 :shared false :sym-lock (primitive/zeroed sync/Mutex)
-             :relocs (ArrayList::new [Reloc] a)
-             :rt-names (ArrayList::new [(slice u8)] a) :rt-syms (ArrayList::new [u32] a))))))
+        (Asm
+          :sects s
+          :sym-chunks chunks
+          :nsyms 0
+          :shared false
+          :sym-lock (zeroed sync/Mutex)
+          :relocs (ArrayList::new [Reloc] a)
+          :rt-names (ArrayList::new [(slice u8)] a)
+          :rt-syms (ArrayList::new [u32] a))))))
 
 ;;; Release the assembler: section contents, symbols, relocations, the lock.
 ;;; Symbol names are the client's.
 (defn asm-free! [(a (ptr Asm))] (-> void)
   (for i (range 0 (len (.sects a))) (buf/buf-free! (sect-buf a i)))
   (free! (mut (.sects a)))
-  (for i (range 0 (len (.sym-chunks a))) (free! (mut (elem (mut (.sym-chunks a)) i))))
+  (for i (range 0 (len (.sym-chunks a)))
+    (free! (mut (elem (mut (.sym-chunks a)) i))))
   (free! (mut (.sym-chunks a)))
   (set! (.nsyms a) 0)
   (free! (mut (.relocs a)))
@@ -139,12 +172,19 @@
     (when (.shared a) (sync/Mutex::unlock! (field a sym-lock)))
     (cast u32 i)))
 
-(defn sect-at [(a (ptr Asm)) (s i64)] (-> (ptr Section)) (elem (mut (.sects a)) s))
-(defn sect-buf [(a (ptr Asm)) (s i64)] (-> (ptr Buf)) (cast (ptr Buf) (mut (.data (sect-at a s)))))
+(defn sect-at [(a (ptr Asm)) (s i64)] (-> (ptr Section))
+  (elem (mut (.sects a)) s))
+
+(defn sect-buf [(a (ptr Asm)) (s i64)] (-> (ptr Buf))
+  (cast (ptr Buf) (mut (.data (sect-at a s)))))
+
 (defn sym-at [(a (ptr Asm)) (i u32)] (-> (ptr Symbol))
   (let [x (cast i64 i)]
-    (elem (elem (mut (.sym-chunks a)) (>> x SYM-CHUNK-LOG)) (& x (- SYM-CHUNK 1)))))
-(defn sym-count [(a (ptr Asm))] (-> u32) (cast u32 (.nsyms a)))
+    (elem (elem (mut (.sym-chunks a)) (>> x SYM-CHUNK-LOG))
+          (& x (- SYM-CHUNK 1)))))
+
+(defn sym-count [(a (ptr Asm))] (-> u32)
+  (cast u32 (.nsyms a)))
 
 (defn sect-align-at-least! [(a (ptr Asm)) (s i64) (log2 i64)] (-> void)
   (let [sec (sect-at a s)]
@@ -152,24 +192,43 @@
 
 ;;; A new undefined symbol.
 (defn sym-add-undef! [(a (ptr Asm)) (name (slice u8)) (binding u8)] (-> u32)
-  (sym-push! a (Symbol :name name :sect -1 :off 0 :size 0 :binding binding)))
+  (sym-push! a
+             (Symbol
+               :name name
+               :sect -1
+               :off 0
+               :size 0
+               :binding binding)))
 
 ;;; Define (or re-define) a symbol at `off` in `sect`.
-(defn sym-def! [(a (ptr Asm)) (sym u32) (sect i64) (off i64) (size i64)] (-> void)
+(defn sym-def! [(a (ptr Asm)) (sym u32) (sect i64) (off i64) (size i64)]
+  (-> void)
   (let [s (sym-at a sym)]
     (set! (.sect s) sect)
     (set! (.off s) off)
     (set! (.size s) size)))
 
-(defn sym-add-def! [(a (ptr Asm)) (name (slice u8)) (sect i64) (off i64) (size i64) (binding u8)] (-> u32)
-  (sym-push! a (Symbol :name name :sect sect :off off :size size :binding binding)))
+(defn sym-add-def! [(a (ptr Asm))
+                    (name (slice u8))
+                    (sect i64)
+                    (off i64)
+                    (size i64)
+                    (binding u8)] (-> u32)
+  (sym-push! a
+             (Symbol
+               :name name
+               :sect sect
+               :off off
+               :size size
+               :binding binding)))
 
 ;;; A local symbol with a generated name.
 (defn sym-add-anon! [(a (ptr Asm)) (sect i64) (off i64) (size i64)] (-> u32)
   (sym-add-def! a "" sect off size (: 0 u8)))
 
 ;;; Append `bytes` to `sect` aligned to `align` and return the offset.
-(defn sect-append! [(a (ptr Asm)) (sect i64) (p (ptr u8)) (n i64) (align i64)] (-> i64)
+(defn sect-append! [(a (ptr Asm)) (sect i64) (p (ptr u8)) (n i64) (align i64)]
+  (-> i64)
   (let [b (sect-buf a sect)]
     (buf/align-to! b align)
     (let [off (.len b)]
@@ -190,15 +249,27 @@
   (let [off (sect-append! a SEC-CONST p n align)]
     (sym-add-anon! a SEC-CONST off n)))
 
-(defn reloc! [(a (ptr Asm)) (sect i64) (off i64) (sym u32) (kind i64) (addend i64)] (-> void)
-  (push! (mut (.relocs a)) (Reloc :sect sect :off off :sym sym :kind (cast u8 kind) :addend addend)))
+(defn reloc! [(a (ptr Asm))
+              (sect i64)
+              (off i64)
+              (sym u32)
+              (kind i64)
+              (addend i64)] (-> void)
+  (push! (mut (.relocs a))
+         (Reloc
+           :sect sect
+           :off off
+           :sym sym
+           :kind (cast u8 kind)
+           :addend addend)))
 
 ;;; The undefined global symbol `name`, created on first use. Used for the
 ;;; runtime functions code generation calls (memcpy, __divti3, ...).
 (defn runtime-sym! [(a (ptr Asm)) (name (slice u8))] (-> u32)
   (block :found
     (for i (range 0 (len (.rt-names a)))
-      (when (= (get (.rt-names a) i) name) (return-from :found (get (.rt-syms a) i))))
+      (when (= (get (.rt-names a) i) name)
+        (return-from :found (get (.rt-syms a) i))))
     (let [s (sym-add-undef! a name (: 1 u8))]
       (push! (mut (.rt-names a)) name)
       (push! (mut (.rt-syms a)) s)

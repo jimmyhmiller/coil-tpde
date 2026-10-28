@@ -31,15 +31,25 @@
 (const OUT-DIR "/tmp/tpde-bench")
 
 ;;; `coil build SRC -o OUT FLAGS...`
-(defn build [(coil (slice u8)) (src (slice u8)) (out (slice u8)) (flags (slice (slice u8)))] (-> Ran)
+(defn build [(coil (slice u8))
+             (src (slice u8))
+             (out (slice u8))
+             (flags (slice (slice u8)))] (-> Ran)
   (coil-cmd coil "build" src out flags))
 
 ;;; `coil emit-obj SRC -o OUT FLAGS...`: the object only (no link, whose
 ;;; inputs may not exist for a cross target).
-(defn emit-obj [(coil (slice u8)) (src (slice u8)) (out (slice u8)) (flags (slice (slice u8)))] (-> Ran)
+(defn emit-obj [(coil (slice u8))
+                (src (slice u8))
+                (out (slice u8))
+                (flags (slice (slice u8)))] (-> Ran)
   (coil-cmd coil "emit-obj" src out flags))
 
-(defn coil-cmd [(coil (slice u8)) (cmd (slice u8)) (src (slice u8)) (out (slice u8)) (flags (slice (slice u8)))] (-> Ran)
+(defn coil-cmd [(coil (slice u8))
+                (cmd (slice u8))
+                (src (slice u8))
+                (out (slice u8))
+                (flags (slice (slice u8)))] (-> Ran)
   (let [(mut av) (list1 cmd)]
     (push! (mut av) src)
     (push! (mut av) "-o")
@@ -55,14 +65,16 @@
     t))
 
 (defn with-target [(flags (ArrayList (slice u8)))] (-> (ArrayList (slice u8)))
-  (let [(mut l) flags t (target)]
+  (let [(mut l) flags
+        t (target)]
     (when (> (len t) 0) (push! (mut l) "--target") (push! (mut l) t))
     l))
 
 (defn tpde-flags [] (-> (ArrayList (slice u8)))
   (let [(mut l) (list1 "--backend")] (push! (mut l) "tpde") (with-target l)))
 
-(defn llvm-flags [] (-> (ArrayList (slice u8))) (with-target (list1 "-O0")))
+(defn llvm-flags [] (-> (ArrayList (slice u8)))
+  (with-target (list1 "-O0")))
 
 (defn with-timings [(flags (ArrayList (slice u8)))] (-> (ArrayList (slice u8)))
   (let [(mut l) flags] (push! (mut l) "--timings") l))
@@ -81,7 +93,8 @@
     (if (= n 0) 0 (get xs (/ n 2)))))
 
 ;;; Tenths: 123 is 12.3.
-(defn ratio10 [(num i64) (den i64)] (-> i64) (if (= den 0) 0 (/ (* num 10) den)))
+(defn ratio10 [(num i64) (den i64)] (-> i64)
+  (if (= den 0) 0 (/ (* num 10) den)))
 
 (defn show10 [(x i64)] (-> (slice u8))
   (let [(mut b) (StrBuf::new (malloc-allocator))]
@@ -118,32 +131,49 @@
     (push! (mut lln) "backend.llvm-optimize")
     (push! (mut lln) "backend.object-emit")
     (for r (range 0 runs)
-      (let [t (emit-obj coil file (cat2 OUT-DIR "/ct-tpde.o") (argv-of (with-timings (tpde-flags))))
-            l (emit-obj coil file (cat2 OUT-DIR "/ct-llvm.o") (argv-of (with-timings (llvm-flags))))
+      (let [t
+              (emit-obj coil
+                        file
+                        (cat2 OUT-DIR "/ct-tpde.o")
+                        (argv-of (with-timings (tpde-flags))))
+            l
+              (emit-obj coil
+                        file
+                        (cat2 OUT-DIR "/ct-llvm.o")
+                        (argv-of (with-timings (llvm-flags))))
             tms (span-ms (.err t) (argv-of tpn))
             lms (span-ms (.err l) (argv-of lln))]
         (if (or (!= (.code t) 0) (!= (.code l) 0) (< tms 0) (< lms 0))
-            (do (eprintln "compile-time: a build failed (tpde exit {}, llvm exit {})" (.code t) (.code l))
-                (eprintln "{}" (.err t))
-                (set! bad true))
-            (do (println "run {}: tpde {} ms, llvm -O0 {} ms" (+ r 1) tms lms)
-                (push! (mut tp) tms)
-                (push! (mut ll) lms)))))
+            (do
+              (eprintln "compile-time: a build failed (tpde exit {}, llvm exit {})"
+                        (.code t)
+                        (.code l))
+              (eprintln "{}" (.err t))
+              (set! bad true))
+            (do
+              (println "run {}: tpde {} ms, llvm -O0 {} ms" (+ r 1) tms lms)
+              (push! (mut tp) tms)
+              (push! (mut ll) lms)))))
     (if bad
         1
         (let [mt (median (mut tp))
               ml (median (mut ll))
               x (ratio10 ml mt)]
-          (println "median backend time: tpde {} ms, llvm -O0 {} ms: {}x faster" mt ml (show10 x))
+          (println "median backend time: tpde {} ms, llvm -O0 {} ms: {}x faster"
+                   mt
+                   ml
+                   (show10 x))
           (if (>= x 100)
               (do (println "PASS: at least 10x") 0)
               (do (println "FAIL: below 10x") 1))))))
 
 ; ---- examples ----
 
-(defn coil-files [(dir (slice u8))] (-> (ArrayList (slice u8))) (coil-files-in dir ".coil"))
+(defn coil-files [(dir (slice u8))] (-> (ArrayList (slice u8)))
+  (coil-files-in dir ".coil"))
 
-(defn stem [(name (slice u8))] (-> (slice u8)) (subslice name 0 (- (len name) 5)))
+(defn stem [(name (slice u8))] (-> (slice u8))
+  (subslice name 0 (- (len name) 5)))
 
 (defn examples [(coil (slice u8)) (dir (slice u8))] (-> i64)
   (let [files (coil-files dir)
@@ -162,23 +192,37 @@
             tbin (cat3 tdir "/" (stem nm))
             lb (build coil src lbin (argv-of (llvm-flags)))]
         (if (!= (.code lb) 0)
-            (do (println "skip {} (the LLVM build fails)" nm) (set! skip (+ skip 1)))
+            (do
+              (println "skip {} (the LLVM build fails)" nm)
+              (set! skip (+ skip 1)))
             (let [tb (build coil src tbin (argv-of (tpde-flags)))]
               (if (!= (.code tb) 0)
-                  (do (println "FAIL {}: the tpde build fails" nm)
-                      (eprintln "{}" (.err tb))
-                      (set! fail (+ fail 1)))
+                  (do
+                    (println "FAIL {}: the tpde build fails" nm)
+                    (eprintln "{}" (.err tb))
+                    (set! fail (+ fail 1)))
                   (let [lr (run-in ldir exe (slice none) 60)
                         tr (run-in tdir exe (slice none) 60)]
-                    (cond
-                      (.timed-out lr) (do (println "skip {} (the LLVM build times out)" nm) (set! skip (+ skip 1)))
-                      (.timed-out tr) (do (println "FAIL {}: the tpde build times out" nm) (set! fail (+ fail 1)))
-                      (!= (.code lr) (.code tr))
-                        (do (println "FAIL {}: exit {} with llvm, {} with tpde" nm (.code lr) (.code tr))
-                            (set! fail (+ fail 1)))
-                      (!= (.out lr) (.out tr))
-                        (do (println "FAIL {}: the output differs" nm) (set! fail (+ fail 1)))
-                      :else (set! pass (+ pass 1)))))))))
+                    (cond (.timed-out lr)
+                            (do
+                              (println "skip {} (the LLVM build times out)" nm)
+                              (set! skip (+ skip 1)))
+                          (.timed-out tr)
+                            (do
+                              (println "FAIL {}: the tpde build times out" nm)
+                              (set! fail (+ fail 1)))
+                          (!= (.code lr) (.code tr))
+                            (do
+                              (println "FAIL {}: exit {} with llvm, {} with tpde"
+                                       nm
+                                       (.code lr)
+                                       (.code tr))
+                              (set! fail (+ fail 1)))
+                          (!= (.out lr) (.out tr))
+                            (do
+                              (println "FAIL {}: the output differs" nm)
+                              (set! fail (+ fail 1)))
+                          :else (set! pass (+ pass 1)))))))))
     (println "examples: {} pass, {} fail, {} skipped" pass fail skip)
     (if (= fail 0) 0 1)))
 
@@ -196,7 +240,10 @@
             lb (build coil src lbin (argv-of (llvm-flags)))
             tb (build coil src tbin (argv-of (tpde-flags)))]
         (if (or (!= (.code lb) 0) (!= (.code tb) 0))
-            (println "{}: build failed (llvm exit {}, tpde exit {})" nm (.code lb) (.code tb))
+            (println "{}: build failed (llvm exit {}, tpde exit {})"
+                     nm
+                     (.code lb)
+                     (.code tb))
             (let [(mut lt) (ArrayList::new [i64] (malloc-allocator))
                   (mut tt) (ArrayList::new [i64] (malloc-allocator))
                   (mut lcode) 0
@@ -211,7 +258,12 @@
               (let [ml (median (mut lt))
                     mt (median (mut tt))]
                 (println "{}: llvm -O0 {} ms (exit {}), tpde {} ms (exit {}), tpde/llvm {}"
-                         nm ml lcode mt tcode (show10 (ratio10 mt ml))))))))
+                         nm
+                         ml
+                         lcode
+                         mt
+                         tcode
+                         (show10 (ratio10 mt ml))))))))
     0))
 
 (defn usage [] (-> i64)
@@ -222,7 +274,9 @@
   2)
 
 (defn arg-int [(i i64) (default i64)] (-> i64)
-  (if (and (< i (args/count)) (!= (args/nth i) "--target")) (match (parse-int (args/nth i)) (Some [v] v) (None [] default)) default))
+  (if (and (< i (args/count)) (!= (args/nth i) "--target"))
+      (match (parse-int (args/nth i)) (Some [v] v) (None [] default))
+      default))
 
 (defn main [(argc i32) (argv (ptr (ptr i8)))] (-> i64)
   (args/init! argc argv)

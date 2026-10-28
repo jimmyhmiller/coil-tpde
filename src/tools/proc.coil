@@ -12,14 +12,28 @@
 (import "coil.cancellation" :as cancellation)
 (import "coil.primitive" :as primitive)
 
-(export cat2 cat3 ends-with? starts-with? space? words lines Ran now-us run-cmd run-in
-        argv-of list1 read-text write-text sort-strings! coil-files-in)
+(export cat2
+        cat3
+        ends-with?
+        starts-with?
+        space?
+        words
+        lines
+        Ran
+        now-us
+        run-cmd
+        run-in
+        argv-of
+        list1
+        read-text
+        write-text
+        sort-strings!
+        coil-files-in)
 
 ; ---- strings ----
 
 (defn starts-with? [(s (slice u8)) (prefix (slice u8))] (-> bool)
   (and (>= (len s) (len prefix)) (= (subslice s 0 (len prefix)) prefix)))
-
 
 (defn cat2 [(x (slice u8)) (y (slice u8))] (-> (slice u8))
   (let [(mut b) (StrBuf::new (malloc-allocator))]
@@ -27,12 +41,15 @@
     (push-str! (mut b) y)
     (finish! (mut b))))
 
-(defn cat3 [(x (slice u8)) (y (slice u8)) (z (slice u8))] (-> (slice u8)) (cat2 (cat2 x y) z))
+(defn cat3 [(x (slice u8)) (y (slice u8)) (z (slice u8))] (-> (slice u8))
+  (cat2 (cat2 x y) z))
 
 (defn ends-with? [(s (slice u8)) (suffix (slice u8))] (-> bool)
-  (and (>= (len s) (len suffix)) (= (subslice s (- (len s) (len suffix)) (len s)) suffix)))
+  (and (>= (len s) (len suffix))
+       (= (subslice s (- (len s) (len suffix)) (len s)) suffix)))
 
-(defn space? [(c u8)] (-> bool) (or (= c #\space) (= c #\tab) (= c (: 13 u8))))
+(defn space? [(c u8)] (-> bool)
+  (or (= c #\space) (= c #\tab) (= c (: 13 u8))))
 
 ;;; The whitespace-separated words of `line`.
 (defn words [(line (slice u8))] (-> (ArrayList (slice u8)))
@@ -62,11 +79,11 @@
 
 (defstruct Ran
   [(started bool)
-   (code i64)      ; exit status, or 128 + signal
+   (code i64)  ; exit status, or 128 + signal
    (timed-out bool)
    (out (slice u8))
    (err (slice u8))
-   (us i64)])      ; wall time in microseconds
+   (us i64)])  ; wall time in microseconds
 
 (defn now-us [] (-> i64)
   (match (time/monotonic-now)
@@ -75,32 +92,66 @@
 
 ;;; Run `prog` with `argv` (not including argv[0]) for at most `timeout-s`
 ;;; seconds, capturing its output.
-(defn run-cmd [(prog (slice u8)) (argv (slice (slice u8))) (timeout-s i64)] (-> Ran)
+(defn run-cmd [(prog (slice u8)) (argv (slice (slice u8))) (timeout-s i64)]
+  (-> Ran)
   (run-in "" prog argv timeout-s))
 
 ;;; `run-cmd` in directory `cwd` ("" for this one).
-(defn run-in [(cwd (slice u8)) (prog (slice u8)) (argv (slice (slice u8))) (timeout-s i64)] (-> Ran)
+(defn run-in [(cwd (slice u8))
+              (prog (slice u8))
+              (argv (slice (slice u8)))
+              (timeout-s i64)] (-> Ran)
   (let [a (malloc-allocator)
-        deadline (match (time/Duration::seconds timeout-s)
-                   (Ok [d] (match (time/Instant::from-now d) (Ok [i] (Some i)) (Err [_] (None [time/Instant]))))
-                   (Err [_] (None [time/Instant])))
-        grace (match (time/Duration::millis 200) (Ok [d] d) (Err [_] (time/Duration :sec 0 :nsec 0)))
-        opts (sp/RunOptions::new prog argv cwd 268435456 268435456 deadline
-                                 (primitive/cast (ptr cancellation/Cancellation) 0) grace)
+        deadline
+          (match (time/Duration::seconds timeout-s)
+            (Ok [d]
+                (match (time/Instant::from-now d)
+                  (Ok [i] (Some i))
+                  (Err [_] (None [time/Instant]))))
+            (Err [_] (None [time/Instant])))
+        grace
+          (match (time/Duration::millis 200)
+            (Ok [d] d)
+            (Err [_] (time/Duration :sec 0 :nsec 0)))
+        opts
+          (sp/RunOptions::new prog
+                              argv
+                              cwd
+                              268435456
+                              268435456
+                              deadline
+                              (primitive/cast (ptr cancellation/Cancellation) 0)
+                              grace)
         (mut res) (primitive/zeroed sp/RunResult)
         t0 (now-us)]
     (match (sp/run a (mut res) opts)
       (Ok [_]
-          (Ran :started true
-               :code (match (.status res) (sp/Exited [c] c) (sp/Signaled [s] (+ 128 s)))
-               :timed-out (.timed-out res)
-               :out (.stdout res) :err (.stderr res) :us (- (now-us) t0)))
-      (Err [_] (Ran :started false :code -1 :timed-out false :out "" :err "" :us 0)))))
+          (Ran
+            :started true
+            :code
+              (match (.status res)
+                (sp/Exited [c] c)
+                (sp/Signaled [s] (+ 128 s)))
+            :timed-out (.timed-out res)
+            :out (.stdout res)
+            :err (.stderr res)
+            :us (- (now-us) t0)))
+      (Err [_]
+           (Ran
+             :started false
+             :code -1
+             :timed-out false
+             :out ""
+             :err ""
+             :us 0)))))
 
-(defn argv-of [(xs (ArrayList (slice u8)))] (-> (slice (slice u8))) (slice xs))
+(defn argv-of [(xs (ArrayList (slice u8)))] (-> (slice (slice u8)))
+  (slice xs))
 
 (defn list1 [(x (slice u8))] (-> (ArrayList (slice u8)))
-  (let [(mut l) (ArrayList::new [(slice u8)] (malloc-allocator))] (push! (mut l) x) l))
+  (let [(mut l) (ArrayList::new [(slice u8)] (malloc-allocator))]
+    (push! (mut l) x)
+    l))
 
 ; ---- files ----
 
@@ -126,7 +177,8 @@
         (set! (mut xs) j x)))))
 
 ;;; The names in `dir` ending in `suffix`, sorted.
-(defn coil-files-in [(dir (slice u8)) (suffix (slice u8))] (-> (ArrayList (slice u8)))
+(defn coil-files-in [(dir (slice u8)) (suffix (slice u8))]
+  (-> (ArrayList (slice u8)))
   (let [(mut out) (ArrayList::new [(slice u8)] (malloc-allocator))]
     (match (fs/Directory::list (malloc-allocator) dir)
       (Ok [names]

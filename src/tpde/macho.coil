@@ -20,27 +20,40 @@
 
 ; arm64 relocation types
 (const ARM64-RELOC-UNSIGNED 0)
+
 (const ARM64-RELOC-BRANCH26 2)
+
 (const ARM64-RELOC-PAGE21 3)
+
 (const ARM64-RELOC-PAGEOFF12 4)
+
 (const ARM64-RELOC-GOT-LOAD-PAGE21 5)
+
 (const ARM64-RELOC-GOT-LOAD-PAGEOFF12 6)
+
 (const ARM64-RELOC-ADDEND 10)
 
-(defn align-up [(v i64) (align i64)] (-> i64) (& (+ v (- align 1)) (- 0 align)))
+(defn align-up [(v i64) (align i64)] (-> i64)
+  (& (+ v (- align 1)) (- 0 align)))
 
 (defn name16! [(out (ptr Buf)) (s (slice u8))] (-> void)
   (let [n (if (> (len s) 16) 16 (len s))]
     (buf/emit-bytes! out (data s) n)
     (buf/emit-zeros! out (- 16 n))))
 
-(defn u32! [(out (ptr Buf)) (x i64)] (-> void) (buf/emit32! out (primitive/cast u32 x)))
-(defn u64! [(out (ptr Buf)) (x i64)] (-> void) (buf/emit64! out (primitive/cast u64 x)))
+(defn u32! [(out (ptr Buf)) (x i64)] (-> void)
+  (buf/emit32! out (primitive/cast u32 x)))
+
+(defn u64! [(out (ptr Buf)) (x i64)] (-> void)
+  (buf/emit64! out (primitive/cast u64 x)))
 
 ; x86-64 relocation types
 (const X86-64-RELOC-UNSIGNED 0)
+
 (const X86-64-RELOC-SIGNED 1)
+
 (const X86-64-RELOC-BRANCH 2)
+
 (const X86-64-RELOC-GOT-LOAD 3)
 
 (defn reloc-type-x64 [(kind u8)] (-> i64)
@@ -64,7 +77,8 @@
 (defn reloc-pcrel? [(kind u8)] (-> bool)
   (or (= kind (: 0 u8)) (= kind (: 1 u8)) (= kind (: 3 u8))))
 
-(defn reloc-word [(symnum i64) (pcrel bool) (length i64) (ext bool) (rtype i64)] (-> i64)
+(defn reloc-word [(symnum i64) (pcrel bool) (length i64) (ext bool) (rtype i64)]
+  (-> i64)
   (| (& symnum 0xFFFFFF)
      (if pcrel (<< 1 24) 0)
      (<< length 25)
@@ -73,31 +87,52 @@
 
 (defn emit-sym-name! [(strtab (ptr Buf)) (s (ptr Symbol)) (idx i64)] (-> void)
   (if (empty? (.name s))
-      (do (buf/emit-slice! strtab "ltmp")
-          (let [(mut digits) [(: 0 u8) (: 0 u8) (: 0 u8) (: 0 u8) (: 0 u8) (: 0 u8) (: 0 u8) (: 0 u8)
-                              (: 0 u8) (: 0 u8) (: 0 u8) (: 0 u8) (: 0 u8) (: 0 u8) (: 0 u8) (: 0 u8)
-                              (: 0 u8) (: 0 u8) (: 0 u8) (: 0 u8)]
-                (mut n) 0
-                (mut v) idx]
-            (loop
-              (set! (mut digits) n (cast u8 (+ (% v 10) 48)))
-              (set! n (+ n 1))
-              (set! v (/ v 10))
-              (when (= v 0) (break)))
-            (let [(mut i) (- n 1)]
-              (while (>= i 0)
-                (buf/emit8! strtab (get digits i))
-                (set! i (- i 1))))))
-      (do (buf/emit8! strtab #\_)
-          (buf/emit-slice! strtab (.name s))))
+      (do
+        (buf/emit-slice! strtab "ltmp")
+        (let [(mut digits)
+                [(: 0 u8)
+                 (: 0 u8)
+                 (: 0 u8)
+                 (: 0 u8)
+                 (: 0 u8)
+                 (: 0 u8)
+                 (: 0 u8)
+                 (: 0 u8)
+                 (: 0 u8)
+                 (: 0 u8)
+                 (: 0 u8)
+                 (: 0 u8)
+                 (: 0 u8)
+                 (: 0 u8)
+                 (: 0 u8)
+                 (: 0 u8)
+                 (: 0 u8)
+                 (: 0 u8)
+                 (: 0 u8)
+                 (: 0 u8)]
+              (mut n) 0
+              (mut v) idx]
+          (loop (set! (mut digits) n (cast u8 (+ (% v 10) 48)))
+            (set! n (+ n 1))
+            (set! v (/ v 10))
+            (when (= v 0) (break)))
+          (let [(mut i) (- n 1)]
+            (while (>= i 0)
+              (buf/emit8! strtab (get digits i))
+              (set! i (- i 1))))))
+      (do
+        (buf/emit8! strtab #\_)
+        (buf/emit-slice! strtab (.name s))))
   (buf/emit8! strtab (: 0 u8)))
 
 ;;; Serialize `a` as a Mach-O object into `out`. Writes ABS64 addends into the
 ;;; section data.
-(defn write-object! [(a (ptr Asm)) (out (ptr Buf))] (-> void) (write! a out false))
+(defn write-object! [(a (ptr Asm)) (out (ptr Buf))] (-> void)
+  (write! a out false))
 
 ;;; The same for an x86-64 object.
-(defn write-object-x64! [(a (ptr Asm)) (out (ptr Buf))] (-> void) (write! a out true))
+(defn write-object-x64! [(a (ptr Asm)) (out (ptr Buf))] (-> void)
+  (write! a out true))
 
 (defn write! [(a (ptr Asm)) (out (ptr Buf)) (x64 bool)] (-> void)
   (let [al (malloc-allocator)
@@ -116,7 +151,11 @@
         (let [s (asm/sym-at a (cast u32 i))
               defined (>= (.sect s) 0)
               ext (!= (.binding s) (: 0 u8))
-              take (case pass 0 (and defined (not ext)) 1 (and defined ext) (not defined))]
+              take
+                (case pass
+                  0 (and defined (not ext))
+                  1 (and defined ext)
+                  (not defined))]
           (when take
             (set! (mut perm) i (len order))
             (push! (mut order) i)
@@ -128,9 +167,13 @@
     (for ri (range 0 nrel)
       (let [r (get (.relocs a) ri)]
         (cond (= (.kind r) (: 5 u8))
-                (buf/patch64! (asm/sect-buf a (.sect r)) (.off r) (cast u64 (.addend r)))
+                (buf/patch64! (asm/sect-buf a (.sect r))
+                              (.off r)
+                              (cast u64 (.addend r)))
               x64
-                (buf/patch32! (asm/sect-buf a (.sect r)) (.off r) (cast u32 (.addend r)))
+                (buf/patch32! (asm/sect-buf a (.sect r))
+                              (.off r)
+                              (cast u32 (.addend r)))
               :else 0)))
     ; ---- section addresses (zero-fill sections last) and file offsets
     (let [(mut addrs) (ArrayList::new [i64] al)
@@ -168,7 +211,12 @@
           (extend-zeroed! (mut nrelocs) nsect)
           (for ri (range 0 nrel)
             (let [r (get (.relocs a) ri)
-                  extra (if (and (not x64) (!= (.addend r) 0) (!= (.kind r) (: 5 u8))) 2 1)]
+                  extra
+                    (if (and (not x64)
+                             (!= (.addend r) 0)
+                             (!= (.kind r) (: 5 u8)))
+                        2
+                        1)]
               (set! (mut nrelocs) (.sect r) (+ (get nrelocs (.sect r)) extra))))
           (for i (range 0 nsect)
             (when (> (get nrelocs i) 0)
@@ -182,16 +230,18 @@
             (for i (range 0 nsym)
               (let [ci (get order i)]
                 (push! (mut strx) (.len strtab))
-                (emit-sym-name! (cast (ptr Buf) (mut strtab)) (asm/sym-at a (cast u32 ci)) ci)))
+                (emit-sym-name! (cast (ptr Buf) (mut strtab))
+                                (asm/sym-at a (cast u32 ci))
+                                ci)))
             (buf/buf-reserve! out (+ stroff (.len strtab)))
             ; ---- header
             (u32! out 0xFEEDFACF)
             (u32! out (if x64 0x01000007 0x0100000C))  ; CPU_TYPE_X86_64 / ARM64
-            (u32! out (if x64 3 0))                    ; CPU_SUBTYPE_X86_64_ALL
-            (u32! out 1)           ; MH_OBJECT
+            (u32! out (if x64 3 0))  ; CPU_SUBTYPE_X86_64_ALL
+            (u32! out 1)  ; MH_OBJECT
             (u32! out ncmds)
             (u32! out sizeofcmds)
-            (u32! out 0x2000)      ; MH_SUBSECTIONS_VIA_SYMBOLS
+            (u32! out 0x2000)  ; MH_SUBSECTIONS_VIA_SYMBOLS
             (u32! out 0)
             ; ---- LC_SEGMENT_64
             (u32! out 25)
@@ -257,13 +307,26 @@
               (for ri (range 0 nrel)
                 (let [r (get (.relocs a) ri)]
                   (when (= (.sect r) si)
-                    (let [rt (if x64 (reloc-type-x64 (.kind r)) (reloc-type (.kind r)))
-                          pc (if x64 (!= (.kind r) (: 5 u8)) (reloc-pcrel? (.kind r)))
+                    (let [rt
+                            (if x64
+                                (reloc-type-x64 (.kind r))
+                                (reloc-type (.kind r)))
+                          pc
+                            (if x64
+                                (!= (.kind r) (: 5 u8))
+                                (reloc-pcrel? (.kind r)))
                           length (if (= (.kind r) (: 5 u8)) 3 2)
                           symnum (get perm (cast i64 (.sym r)))]
-                      (when (and (not x64) (!= (.addend r) 0) (!= (.kind r) (: 5 u8)))
+                      (when (and (not x64)
+                                 (!= (.addend r) 0)
+                                 (!= (.kind r) (: 5 u8)))
                         (u32! out (.off r))
-                        (u32! out (reloc-word (& (.addend r) 0xFFFFFF) false 2 false ARM64-RELOC-ADDEND)))
+                        (u32! out
+                              (reloc-word (& (.addend r) 0xFFFFFF)
+                                          false
+                                          2
+                                          false
+                                          ARM64-RELOC-ADDEND)))
                       (u32! out (.off r))
                       (u32! out (reloc-word symnum pc length true rt)))))))
             ; ---- nlist symbols
@@ -273,14 +336,22 @@
                     s (asm/sym-at a (cast u32 ci))]
                 (u32! out (get strx i))
                 (if (< (.sect s) 0)
-                    (do (buf/emit8! out (: 1 u8))
-                        (buf/emit8! out (: 0 u8))
-                        (buf/emit16! out (: 0 u16))
-                        (u64! out 0))
-                    (do (buf/emit8! out (if (= (.binding s) (: 0 u8)) (: 14 u8) (: 15 u8)))
-                        (buf/emit8! out (cast u8 (+ (.sect s) 1)))
-                        (buf/emit16! out (if (= (.binding s) (: 2 u8)) (: 128 u16) (: 0 u16)))
-                        (u64! out (+ (get addrs (.sect s)) (.off s)))))))
+                    (do
+                      (buf/emit8! out (: 1 u8))
+                      (buf/emit8! out (: 0 u8))
+                      (buf/emit16! out (: 0 u16))
+                      (u64! out 0))
+                    (do
+                      (buf/emit8! out
+                                  (if (= (.binding s) (: 0 u8))
+                                      (: 14 u8)
+                                      (: 15 u8)))
+                      (buf/emit8! out (cast u8 (+ (.sect s) 1)))
+                      (buf/emit16! out
+                                   (if (= (.binding s) (: 2 u8))
+                                       (: 128 u16)
+                                       (: 0 u16)))
+                      (u64! out (+ (get addrs (.sect s)) (.off s)))))))
             (buf/emit-bytes! out (.data strtab) (.len strtab))
             (buf/buf-free! (cast (ptr Buf) (mut strtab)))))))
     (free! (mut order))

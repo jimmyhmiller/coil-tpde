@@ -17,7 +17,8 @@
 
 (const INVALID-REF 0xFFFFFFFF)
 
-(defn invalid-ref [] (-> u32) (: 0xFFFFFFFF u32))
+(defn invalid-ref [] (-> u32)
+  (: 0xFFFFFFFF u32))
 
 (deftrait IRAdaptor [Self]
   ; ---- module ----
